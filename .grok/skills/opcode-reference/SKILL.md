@@ -14,7 +14,7 @@ description: >
 
 1. **Mnemonics are Zilog**, as in Z80 assembly — not Intel 8080/8085 names.
 2. **Opcode bytes and timings are 8085**, not Z80 (many encodings differ or do not exist on Z80).
-3. **Undocumented / extended** opcodes are noted in tables (column or section), never by prefixing the mnemonic. The mnemonic is the bare Zilog form (e.g. `sub hl,bc`, not `*sub hl,bc`).
+3. **Undocumented / extended** opcodes are noted in tables (column or section), never by prefixing the mnemonic.
 4. Immediate forms: `*` = 8-bit immediate (d8), `**` = 16-bit immediate/address (d16/a16). These `*`/`**` are operand placeholders only.
 5. For **LDHI** / **LDSI** equivalents (`ld de,hl+*` / `ld de,sp+*`), the 8-bit offset is **unsigned**.
 6. Conditional cycle counts use `taken/not-taken` (e.g. `12/6`, `10/7`, `18/9`).
@@ -78,7 +78,7 @@ Condition codes for jumps/calls/returns:
 | `nc` / `c` | C clear / set |
 | `po` / `pe` | P odd / even (parity) |
 | `p` / `m` | S clear (plus) / set (minus) |
-| `nk` / `k` | K clear / set (undocumented; also jnx5/jnui, jx5/jui) |
+| `nk` / `k` | K clear / set (undocumented) |
 | `v` (rst v only) | V set |
 
 ## Intel → Zilog mnemonic map (primary)
@@ -106,7 +106,7 @@ Use Zilog in all generated/edited 8085 code. Intel names appear only when transl
 | `HLT` | `halt` |
 | `ADD/ADC r` | `add a,r` / `adc a,r` |
 | `SUB/SBB r` | `sub r` / `sbc a,r` |
-| `ANA/XRA/ORA/CMP r` | `and` / `xor` / `or` / `cp` |
+| `ANA/XRA/ORA/CMP r` | `and r` / `xor r` / `or r` / `cp r` |
 | `ADI/ACI/SUI/SBI` | `add a,*` / `adc a,*` / `sub *` / `sbc a,*` |
 | `ANI/XRI/ORI/CPI` | `and *` / `xor *` / `or *` / `cp *` |
 | `JMP/Jcc` | `jp **` / `jp cc,**` |
@@ -123,8 +123,6 @@ Use Zilog in all generated/edited 8085 code. Intel names appear only when transl
 | `RST n` | `rst 00h` … `rst 38h` |
 
 ### Undocumented / extended
-
-Mnemonics below are complete as written — do not add a leading `*`.
 
 | Op | Intel | Zilog | Bytes | Cycles | Flags (SZKAPVC) | Effect |
 |----|-------|-------|-------|--------|-----------------|--------|
@@ -173,7 +171,7 @@ Logical ops still use the full pastraiser mask `SZKAPVC` (how individual bits ar
 1. Emit **Zilog** mnemonics only (`ld a,b` not `MOV A,B`; `jp nz,label` not `JNZ`).
 2. Register pairs: `bc`, `de`, `hl`, `af`, `sp` — never Intel `B`, `D`, `H`, `PSW` in new code.
 3. Use `(hl)`, `(bc)`, `(de)`, `(**)` for memory; never `M`.
-4. Prefer undocumented ops when they clearly win (e.g. `sub hl,bc`, `ld hl,(de)`, `ld (de),hl`, `ld de,hl+*`) **and** the target assembler/CPU path supports them; comment with Intel name if useful for readers.
+4. Prefer undocumented ops when they clearly win (e.g. `sub hl,bc`, `ld hl,(de)`, `ld (de),hl`, `ld de,hl+*`) **and** the target assembler/CPU path supports them.
 5. Never assume Z80 instruction timings or prefix opcodes exist on 8085.
 6. When optimizing, consult [references/opcodes.md](references/opcodes.md) for exact size/cycle/flag data.
 

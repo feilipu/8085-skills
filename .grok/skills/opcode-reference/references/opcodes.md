@@ -2,8 +2,8 @@
 
 **Mnemonics:** Zilog ([feilipu/8085-opcodes](https://gitlab.com/feilipu/8085-opcodes) `8085_instructions.html`)  
 **Flags / cycles:** [pastraiser](https://pastraiser.com/cpu/i8085/i8085_opcodes.html) order **S Z K A P V C**  
-Immediate placeholders: `*` = d8, `**` = d16/a16 (not an “undocumented” marker).  
-Undocumented / extended ops are listed in the notes column or the dedicated section — never with a `*` prefix on the mnemonic.
+Immediate placeholders: `*` = d8, `**` = d16/a16.  
+Undocumented / extended ops are listed in the notes column or the dedicated section.
 
 ---
 
