@@ -14,7 +14,7 @@ description: >
 
 1. **Mnemonics are Zilog**, as in Z80 assembly — not Intel 8080/8085 names.
 2. **Opcode bytes and timings are 8085**, not Z80 (many encodings differ or do not exist on Z80).
-3. **Undocumented / extended** opcodes are noted in tables (column or section), never by prefixing the mnemonic.
+3. **Undocumented / extended** opcodes are noted in tables (column or section).
 4. Immediate forms: `*` = 8-bit immediate (d8), `**` = 16-bit immediate/address (d16/a16). These `*`/`**` are operand placeholders only.
 5. For **LDHI** / **LDSI** equivalents (`ld de,hl+*` / `ld de,sp+*`), the 8-bit offset is **unsigned**.
 6. Conditional cycle counts use `taken/not-taken` (e.g. `12/6`, `10/7`, `18/9`).
