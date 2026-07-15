@@ -179,8 +179,229 @@ When writing or reviewing 8085-only assembly:
 6. Use **`sra hl`** for signed 16-bit divide-by-two / arithmetic shift.
 7. Fall back to 8080-portable code only when the binary must also run on 8080/Z80-without-8085-ops.
 
+## Lessons from sccz80 practice (Z80 vs 8085)
+
+Source tree in z88dk: `libsrc/l/sccz80/`
+
+| Directory | Role |
+|-----------|------|
+| **5-z80** | Often thin wrappers into the large Z80 math library (`l_muls_*`, `l_divu_*`, IX/`exx`) |
+| **7-8085** | Self-contained 8085-tuned bodies using extended ops |
+| **9-common** | Portable 8080-style byte compares / stores |
+| **8-8080** | Full 8080 mul/div without `rl de` / `sub hl,bc` |
+
+“Z80 vs 8085” is not always the same algorithm twice: Z80 frequently **outsources** to a fast Z80 core; 8085 **implements** the primitive with extended instructions. Use **7-8085** as the model for hand-written 8085 code.
+
+### 1. `sub hl,bc` is the compare/subtract primitive
+
+| Path | Approach |
+|------|----------|
+| Z80 `l_eq` | `or a` / `sbc hl,de` then test Z |
+| 8085 `l_eq` | `ld bc,de` / **`sub hl,bc`** then test Z |
+| 9-common | Byte-wise `sub`/`sbc` on L then H |
+
+Same for **`l_ne`**. 8085 also exports **`l_eq_hlbc` / `l_ne_hlbc`** so callers that already hold BC skip `ld bc,de`.
+
+Signed/unsigned relations in **7-8085** (e.g. `l_ge`, `l_lt`, `l_uge`) use one subtract + **K/Z/C**, not 9-common’s “add `$80` and `cp`” path:
+
+```asm
+; 8085-style: DE >= HL (signed) — see l_ge
+    ld  bc,de
+    sub hl,bc
+    jp  k,true
+    jp  z,true
+    ; false
+```
+
+**Do this:** On 8085-only code, prefer **`sub hl,bc` + Z/C/K** for 16-bit ==, !=, and ordered compares. Reserve 9-common-style sequences for 8080 portability only.
+
+### 2. `rl de` is the mul/div shift engine
+
+- **`l_rlde`:** 8085 is a single `rl de`; 8080 needs four instructions via A.
+- **`l_mult`:** 8085 uses partially unrolled shift-add: **`add hl,hl` + `rl de`**, add BC when carry; product in HL, multiplier rotates in DE. Z80 jumps to `l_muls_16_16x16`.
+- **`l_div_u`:** 8085 restoring division with **`rl de`**, **`ex de,hl`**, **`sub hl,bc`**, restore via **`add hl,bc`**, **`ccf`** into quotient bits; often **two bits per loop body** (partial unroll). 8080 uses a long RLA loop and even **push/pop AF** as a counter.
+
+**Do this:** Build 16-bit mul/div on **`rl de` + `sub hl,bc` + `add hl,bc`**. Unroll when the extended ops keep the body tiny.
+
+### 3. `sra hl` vs Z80 `sra h` / `rr l`
+
+```asm
+; Z80 signed >>
+    sra h
+    rr  l
+; 8085 signed >>
+    sra hl
+```
+
+No `srl hl` on 8085 — **unsigned >>** in `l_asr_u` is:
+
+```asm
+    sra hl
+    ld  a,$7f
+    and h
+    ld  h,a          ; clear bit 15 after arithmetic shift
+```
+
+**Do this:** Signed 16-bit right shift → **`sra hl`**. Logical right shift → **`sra hl` + force bit 15 clear**.
+
+### 4. Stack as memory: `ld de,sp+n`, `ld hl,(de)`, `ld (de),hl`
+
+- **`l_pint_pop`:** 9-common stores a word as two byte writes; 8085 is **`ld (de),hl`**.
+- **`l_long_add` / `l_long_sub`:** secondary in DEHL; primary on stack; **`ld de,sp+2`** then byte `add`/`adc` or `sub`/`sbc` through A while walking with `inc de`; finally drop the 4-byte primary around the return address. Z80 long sub often uses **IX** and **`sbc hl,bc`**.
+- **`l_long_mult`:** push secondary; pull primary/secondary pieces with **`ld de,sp+N` / `ld hl,(de)`**; partial products on stack; rewrite return with **`ld (de),hl`**; **`ld sp,hl`** to discard parameters — **no static cells**.
+
+**Do this:** Multi-word and multi-arg work uses **SP-relative DE + word load/store**. Do not invent BSS temps because Z80 would have used IX/`exx`.
+
+### 5. 32-bit left shift: `add hl,hl` + `rl de`
+
+```asm
+; 8085 l_long_asl loop (dehl <<= 1)
+    add hl,hl
+    rl  de
+```
+
+Z80 typically pops 32-bit and jumps to a shared `l_lsl_dehl`. Same structure; 8085 keeps it local and explicit.
+
+### 6. What Z80 has that 8085 substitutes
+
+| Z80 asset | 8085 substitute in sccz80 |
+|-----------|---------------------------|
+| `sbc hl,de` | `sub hl,bc` (after `ld bc,de`) or byte `sub`/`sbc` |
+| `exx`, IX/IY | Stack traffic; dual entry points (`*_hlbc`) |
+| Fat `l_mul*` / `l_div*` library | Open-coded shift-add/div with extended ops |
+| `srl h` | `sra hl` + mask bit 15 |
+
+8085 is not copying every Z80 micro-op; it **closes the 8080 gap** and often reaches Z80-level library results (e.g. equality-heavy code) via these substitutes.
+
+### 7. Entry-point style worth copying
+
+1. **Public DE/HL form** → **`ld bc,de`** → **HL/BC core** (`l_eq_hlbc`, `l_mult_0`, `l_div_0`).
+2. **Compare results** via tiny helpers: HL=1 + carry set (true), HL=0 + carry clear (false).
+3. **Partial unroll** when extended ops shrink the loop body (mul/div).
+4. **Signed div** = take absolutes → unsigned core (`l_div_0`) → fix quotient/remainder signs (remainder follows dividend).
+
+### Practice rules (summary)
+
+1. **Compares:** `sub hl,bc` + Z/C/K — not 9-common’s `$80` bias — when 8085-only.
+2. **Mul/div/shift:** **`rl de`** and **`sub hl,bc`**; unroll if the body stays small.
+3. **Signed >>:** **`sra hl`**; logical >> = sra + clear bit 15.
+4. **Word through DE:** always **`ld (de),hl` / `ld hl,(de)`**.
+5. **Long ops / multi-arg:** **`ld de,sp+n`**, walk with `inc de`, drop args by adjusting SP around the return — **no static RAM**.
+6. **32-bit left shift:** **`add hl,hl` / `rl de`**.
+7. **Do not ape Z80 IX/`exx` on 8085** — ape **stack + BC as second operand**.
+
+## Lessons from IEEE float / 32-bit practice (Z80 vs 8085)
+
+Derived from parallel Z80 and 8085 implementations in z88dk  
+`libsrc/math/float/am9511/asm/{z80,8085}/` (same-named pairs for stack traffic, compare, frexp/ldexp, ×2/÷2/×10, classify, arg swap, format conversion, device I/O).
+
+Here the **algorithm is often the same** on both CPUs; the split shows how to **replace Z80 register-set luxuries** with extended 8085 ops while keeping **stack-only** working storage. Complements the sccz80 section (integer CRT primitives).
+
+### 1. `exx` → stack + `ld de,sp+n` (second 32-bit value on the stack)
+
+| Z80 | 8085 |
+|-----|------|
+| Keep **left** in DEHL and **right** in DEHL' via repeated **`exx`** (binary float compare) | Point with **`ld de,sp+4` / `ld de,sp+8`**, load MSWs with **`ld hl,(de)`**, process in place |
+| **`exx`** to preserve DEHL across a helper that needs the primary regs | Save DE in BC if needed: **`ld bc,de`**, **`ld de,sp+n`**, restore **`ld de,bc`** |
+| Pop args into registers early | Leave args on stack; read with SP-relative DE; clean frame at exit |
+
+**Arg swap / SP math:** Z80 often does `ld hl,n` / `add hl,sp`; 8085 prefers **`ld de,sp+n`** — same layout, cheaper SP addressing.
+
+**Binary compare (8085):** may **mutate stack parameters** (e.g. total-order bit flips for signed IEEE sort keys); creates **scratch words on the stack** (`push` / `ld de,sp+0`) for multi-byte subtract results — still **no BSS**.
+
+**Do this:** When Z80 would use **`exx` as a second DEHL**, on 8085 keep the second value **on the call stack** and address it with **`ld de,sp+*`**. Prefer reordering or carefully documented in-place stack updates over static 32-bit cells.
+
+### 2. IEEE sign/exponent field: prefer `rl de` (not `sla e` / `rl d` / `rr e`)
+
+Z80 float helpers commonly peel the biased exponent with:
+
+```asm
+    sla e
+    rl  d        ; sign → C, exponent in D
+    ...
+    rr  d
+    rr  e        ; repack
+```
+
+8085 equivalents use:
+
+```asm
+    rl  de       ; sign → C; exponent ends in D (mantissa bits shift in E)
+    ; ... work on D (and EHL) ...
+    ld  a,d
+    rra
+    ld  d,a
+    ld  a,e
+    rra
+    ld  e,a      ; repack sign+exponent through A (no 16-bit rr de)
+```
+
+**Test “register was zero”** without destroying it (e.g. exponent in D after isolate):
+
+```asm
+    inc d
+    dec d
+    jp  z,zero_case
+```
+
+**Do this:** For IEEE DEHL packing, treat **`rl de`** as the canonical open of the sign+exponent field. Repack with **byte `rra` through A**. Use **`inc r` / `dec r` / `jp z`** to test a register for zero.
+
+### 3. No `srl` / Z80 block I/O — byte A paths
+
+| Z80 | 8085 practice |
+|-----|----------------|
+| `srl e` / `rr h` / `rr l` (logical multi-byte >>) | Chain **`rra` through A** across E, H, L |
+| `outi` / `out (c),r` / `in r,(c)` | **`ld a,…`** then **`out (*),a`** / **`in a,(*)`** (or thin macros that leave the byte in A) |
+| `djnz` | **`dec b` / `jp nz`** |
+| `jr` | **`jp`** is fine (relative jump optional) |
+
+**Scaled mantissa work** (e.g. ×10 as `2*(4*a+a)`): same algebra on both CPUs; Z80 may use `srl`, 8085 uses A-based shifts and **stack temps** (`push de` / `push hl` / `ex (sp),hl` / `add hl,de`) for partial sums.
+
+**Do this:** Logical multi-byte shifts go **through A**. Port I/O goes **through A**. Do not emit Z80 block I/O or `srl`.
+
+### 4. Same high-level optimisations on both CPUs (keep them)
+
+These are **not** 8085-specific but must survive a Z80→8085 port:
+
+- **×2 / ÷2 float** = **inc/dec the exponent**, with overflow/underflow/NaN traps — not a full multiply/divide.
+- **IEEE zero** ≡ **exponent field zero** (for “is zero” in compare/classify, mantissa can be ignored).
+- **Total-order float compare** (flip sign bit; if negative flip all bits) then **unsigned multi-word subtract** — float order becomes integer order.
+
+**Do this:** Preserve these algorithmic shortcuts; only change the **register/stack mechanics**.
+
+### 5. Callee / stack cleanup patterns
+
+Multi-arg float helpers (e.g. frexp-style: value + pointer out-parameter) on 8085 often:
+
+1. Read args with **`ld de,sp+n`** / **`ld hl,(de)`** without popping first  
+2. Write through a pointer in BC  
+3. End with a **structured epilogue** that drops stack args and restores the return address:
+
+```asm
+    pop bc          ; return
+    pop hl          ; keep what must survive
+    pop af          ; drop consumed arg words
+    pop af
+    push bc         ; return
+```
+
+Z80 often pops into registers at entry instead. Both end with a clean stack; neither should park intermediates in static RAM.
+
+**Do this:** For multi-arg callees, either pop to regs (Z80 style) **or** SP-relative access + **one structured epilogue** — never a global temp.
+
+### 6. Generalised rules (any 8085 code)
+
+1. **Second 32-bit value** → stack slot + **`ld de,sp+*`**, not **`exx`**.
+2. **Preserve DEHL across a helper** → stack or **`ld bc,de`** (if BC free), not **`exx`**.
+3. **IEEE/bitfield rotate on DE** → **`rl de`** open; **`rra` via A** close.
+4. **Logical >> on multi-byte** → A-chain **`rra`**, not **`srl`**.
+5. **I/O** → A + port address; no **`outi` / `in r,(c)`** assumptions.
+6. **Scratch** for compare/mul partials → **push frame / `ex (sp),hl`**, not BSS (reinforces hard rule).
+7. **Keep domain optimisations** (exp ±1 for ×2/÷2, exponent-zero ⇒ zero, integerised float compare).
+
 ## Related
 
 - Opcode map, flags, cycle counts: **`/opcode-reference`**
 - Background and measured library impact: [feilipu.me — 8085 Software](https://feilipu.me/2021/09/27/8085-software/)
-- Example optimized primitives: z88dk `libsrc/_DEVELOPMENT/l/sccz80/7-8085/` (mul, div, eq, long ops)
+- Integer CRT reference: z88dk `libsrc/l/sccz80/7-8085/` (contrasts: `5-z80/`, `9-common/`, `8-8080/`)
+- Float practice source: z88dk `libsrc/math/float/am9511/asm/8085/` (contrasts: `.../asm/z80/`)
