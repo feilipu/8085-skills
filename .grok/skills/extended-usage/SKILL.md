@@ -141,6 +141,24 @@ loop:
 
 Do not copy Z80 `dec bc; jp nz` semantics.
 
+#### Alternative 16-bit counted loop structure.
+
+Alternatively 16-bit loops can be created using the **`dec bc / inc b / inc c`** set up to create inner and outer loops, using any 16 bit register pair. Typically **`bc`** would be used, as **`hl`** and **`de`** have other priority uses.
+
+```asm
+   dec bc
+   inc b
+   inc c
+
+loop:
+   ; code body to be repeated bc times.
+
+   dec c
+   jr NZ,loop
+   dec b
+   jr NZ,loop
+```
+
 ### 6. Multiply / divide building blocks — `rl de` + `sub hl,bc`
 
 Shift-add mul and restoring div center on:
@@ -204,6 +222,10 @@ Push a scratch word; **`ex (sp),hl`** swaps with it when AF/BC/DE/HL are full. *
 | Open-coded extended-op sequences | Assuming Z80 library mul/div cores |
 
 Assembler must be **8085-aware** (these encodings are not Z80 prefixes).
+
+### 10. Synthetic opcodes
+
+The z88dk-z80asm assembler has a MACRO capability, and it has the capability to support "synthetic" opcodes. Synthetic opcodes are usually created by a series of useful operations that can be chained together without side effects. For example `ld bc,de` which is a 16-bit emulation by two 8-bit operations, or for example `ld a,(hl+)` which is an indirect load followed by an increment of the index register. These operations can make code more concise and easier to debug, or allow an operation supported by one CPU to be used across multiple CPUs without deploying conditional assembly.
 
 ## Pitfalls
 
