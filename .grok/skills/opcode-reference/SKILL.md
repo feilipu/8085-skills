@@ -21,7 +21,7 @@ description: >
 
 Prefer the full tables in [references/opcodes.md](references/opcodes.md). Use this skill body for rules, flags, mnemonic mapping, and undocumented ops.
 
-Always incorporate the extended usage concepts included in the [extended-usage](extended-usage/SKILL.md). Use this skill body for techniques and optimisation.
+Always incorporate the extended usage concepts included in the [extended-usage](../extended-usage/SKILL.md). Use this skill body for techniques and optimisation.
 
 ## Sources
 
