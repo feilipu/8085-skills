@@ -3,7 +3,8 @@ name: extended-usage
 description: >
   Usage hints and coding preferences for Intel 8085 extended (undocumented)
   instructions, using Zilog mnemonics. Strong rule: stack-only locals and
-  intermediates (no static RAM scratch). Prefer when choosing idioms for stack
+  intermediates; static/BSS only for state that must survive across function
+  calls — never for intermediate storage. Prefer when choosing idioms for stack
   frames, reentrancy, 16/32-bit shifts, K-flag loops, sub hl,bc compares, or
   optimizing 8085 assembly beyond the bare opcode map. Complements
   /opcode-reference. Use when the user runs /extended-usage or asks how to use
@@ -18,14 +19,20 @@ Background: [8085 Software — Extended Instructions](https://feilipu.me/2021/09
 
 **Always emit Zilog mnemonics** (project convention).
 
-## Hard rule: stack variables, not static RAM
+## Hard rule: stack variables, not static/BSS
 
-**Do not use static RAM for variables** (no fixed `label: ds n` / absolute scratch cells for locals, temps, or intermediates) **unless there is absolutely no alternative**.
+**Static memory (BSS / `label: ds n` / fixed absolute cells) must only hold state that must survive across function calls.** Never use it for intermediate variable storage.
+
+| Allowed in static/BSS | Forbidden in static/BSS |
+|-----------------------|-------------------------|
+| Values that **must outlive** the current call (true globals, module state, buffers callers re-enter later) | Locals, temps, intermediate results, scratch across a few instructions |
+| MMIO, interrupt vectors, ROM constants | “Scratch” cells to avoid a push or stack frame |
+| | Anything justified only by fewer cycles or easier coding |
 
 - Function **locals, temporaries, and intermediate results** live **only on the stack** (arguments, return slots, pushes, explicit frames).
 - Access with **`ld de,sp+*`**, **`ld hl,(de)`**, **`ld (de),hl`**, **`ld a,(de)`**, push/pop, **`ex (sp),hl`**.
-- Static/absolute memory only for true globals, MMIO, vectors, ROM constants — prefer pointers passed on the stack over new static scratch.
-- “Slightly fewer cycles” or “easier to write” is **not** enough justification for static scratch.
+- Prefer **pointers passed on the stack** over new static cells, even for long-lived data when the caller already owns the buffer.
+- “Slightly fewer cycles” or “easier to write” is **not** enough justification for static/BSS scratch.
 
 ## Instruction preferences
 
@@ -102,10 +109,12 @@ Temporary use then restore previous HL (DE ends as SP+n, not original DE):
 Document every slot. Drop consumed args in one epilogue:
 
 ```asm
-    pop bc             ; return address
-    ; pop/discard arg words as required
+    pop bc             ; return address — never pop af for this
+    ; pop/discard arg words as required (pop af is OK here to discard only)
     push bc            ; return
 ```
+
+**`pop af` and the return address:** F bit 3 is hardwired 0 on the 8085, so a word popped into AF can never be a faithful 16-bit value (`$FFFF` → `$FF7F`). **Never `pop af` the return address** (and never `push af` / `ret` a return path that depends on an intact address). **Do** use `pop af` to **discard** intermediate stack words on return when A/F need not be preserved — the corrupted F is irrelevant because the value is thrown away.
 
 ### 4. 16-bit compare and subtract — `sub hl,bc`
 
@@ -209,7 +218,7 @@ Partial **unroll** when the body is small. Entry style: public DE/HL form → **
 
 ### 8. Extra 16-bit slot — `ex (sp),hl`
 
-Push a scratch word; **`ex (sp),hl`** swaps with it when AF/BC/DE/HL are full. **Do not** use `push af`/`pop af` as a free 16-bit temp: F bit 3 is hardwired 0 (`$FFFF` → `$FF7F` on the round trip).
+Push a scratch word; **`ex (sp),hl`** swaps with it when AF/BC/DE/HL are full. **Do not** use `push af`/`pop af` as a free 16-bit temp or to hold a return address: F bit 3 is hardwired 0 (`$FFFF` → `$FF7F` on the round trip). **`pop af` is fine only when the popped word is discarded** (e.g. clearing intermediates off the stack in an epilogue).
 
 ### 9. I/O and Z80-only ops to avoid
 
@@ -229,7 +238,7 @@ The z88dk-z80asm assembler has a MACRO capability, and it has the capability to 
 
 ## Pitfalls
 
-1. **AF is not a clean 16-bit temp** — hardwired zero in F.
+1. **`pop af` never for function return** — F bit 3 is hardwired 0, so AF cannot hold a correct return address. Use BC/DE/HL for the return word. **`pop af` is OK only to discard** intermediate stack values when the popped data is unused. AF is also not a clean 16-bit temp (`$FFFF` → `$FF7F`).
 2. **`sub hl,bc` has no borrow-in** — multi-precision use A + `sbc`.
 3. **K ≠ Z on 16-bit dec** — pre-dec + `jp k`/`jp nk`.
 4. **Offsets on `ld de,sp+*` / `ld de,hl+*` are unsigned.**
@@ -237,7 +246,7 @@ The z88dk-z80asm assembler has a MACRO capability, and it has the capability to 
 
 ## Preference order (when writing 8085-only code)
 
-1. Stack-only locals/temps; static scratch only if **no alternative**.
+1. Stack-only locals/temps/intermediates; **static/BSS only for state that must survive across calls** — never intermediate storage.
 2. **`ld de,sp+*`** for stack pointers; **`ex de,hl`** forms for HL←SP+n (see §2) over `ld hl,nn`/`add hl,sp` when offset is u8.
 3. **`ld hl,(de)` / `ld (de),hl` / `ld a,(de)`** for stack traffic through DE.
 4. **`sub hl,bc`** for 16-bit ==, !=, and signed compares with **K**.
