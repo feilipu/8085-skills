@@ -116,6 +116,24 @@ Document every slot. Drop consumed args in one epilogue:
 
 **`pop af` and the return address:** F bit 3 is hardwired 0 on the 8085, so a word popped into AF can never be a faithful 16-bit value (`$FFFF` → `$FF7F`). **Never `pop af` the return address** (and never `push af` / `ret` a return path that depends on an intact address). **Do** use `pop af` to **discard** intermediate stack words on return when A/F need not be preserved — the corrupted F is irrelevant because the value is thrown away.
 
+#### Multi-word frame rebuild (no `exx`)
+
+Without alternate registers, a second long value lives **on the stack**, not in a shadow bank. When assembling a clean frame on top of junk:
+
+1. **Push order vs layout.** Stack grows down. For layout top→bottom `W0, W1, W2` (W0 at lowest address / first pop), push **W2, then W1, then W0**. After `pop bc; pop de; pop hl` of pushed temps, restore with `push bc; push de; push hl` only if that matches the desired top word — verify with a depth diagram.
+2. **Overlapping copy (memmove).** Copying a block upward when `dest = src + k` and `k < size` **overlaps**. Copy **high → low** (last byte first). Forward copy corrupts the tail.
+3. **Raise SP over junk.** After a correct prefix of *N* good bytes sits above *J* junk bytes: copy the *N*-byte frame up by *J* (non-overlapping if *J ≥ N*, else high→low), then `ld hl,J` / `add hl,sp` / `ld sp,hl`.
+4. **Product / result in BC·DE·HL while scrubbing.** Hold the full result in registers; do not park the return address in AF. Typical pattern: write result over a callee-owned slot, drop temps with SP math, then:
+
+```asm
+    pop hl             ; ret
+    pop bc             ; result.bc
+    pop de             ; result.ml
+    ex  (sp),hl        ; HL = result.mh; (sp) = ret
+    ex  de,hl          ; DE = mh, HL = ml
+    ret                ; BC DEHL = result; only ret on stack
+```
+
 ### 4. 16-bit compare and subtract — `sub hl,bc`
 
 ```asm
@@ -243,6 +261,9 @@ The z88dk-z80asm assembler has a MACRO capability, and it has the capability to 
 3. **K ≠ Z on 16-bit dec** — pre-dec + `jp k`/`jp nk`.
 4. **Offsets on `ld de,sp+*` / `ld de,hl+*` are unsigned.**
 5. **`rst v`** only if **0040h** is defined.
+6. **`rla` / `rra` / `rlca` / `rrca` do not set Z** — never `rla; jp z,...`. Test with `or a` / `and a` / explicit mask first, or use `inc`/`dec` on a copy.
+7. **No `exx`, IX, IY, `djnz`** — second long operand on stack; counted loops via `dec b`/`jp nz` or K pre-dec (§5).
+8. **Forward overlapping stack copy corrupts** — see multi-word frame rebuild above.
 
 ## Preference order (when writing 8085-only code)
 
