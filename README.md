@@ -14,6 +14,7 @@ The z88dk-z80asm assembler has a MACRO capability, and it has the capability to 
 |-------|------|----------|
 | **opcode-reference** | `.grok/skills/opcode-reference/SKILL.md` | Full 256-opcode map, Zilog mnemonics, flags (S Z K A P V C), undocumented ops, timings |
 | **extended-usage** | `.grok/skills/extended-usage/SKILL.md` | Stack-only locals, `ld de,sp+*`, frame rebuild, K-flag loops, mul/div building blocks, pitfalls |
+| **z88dk-tooling** | `.grok/skills/z88dk-tooling/SKILL.md` | `z88dk-ticks`, hotspots, maps/nm/disasm, math suite, benchmarks, A/B measurement pitfalls |
 
 Full opcode tables: `.grok/skills/opcode-reference/references/opcodes.md`
 
