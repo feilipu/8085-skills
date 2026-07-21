@@ -3,10 +3,11 @@ name: z88dk-tooling
 description: >
   How to use z88dk host tools to measure, profile, and diagnose 8085 (and
   related) code in the z88dk tree: z88dk-ticks timing and debugger, hotspots,
-  map/nm/disassembly, suite tests, A/B library swaps, and common measurement
-  pitfalls. Use when optimising library asm, explaining benchmark deltas,
-  verifying regressions, running +test -clib=8085, or the user runs
-  /z88dk-tooling.
+  map/nm/disassembly, suite tests, A/B library swaps, z88dk-copt peephole rules
+  (and what they mean for hand-written library asm vs compiler output), and
+  common measurement pitfalls. Use when optimising library asm, writing or
+  reviewing sccz80/copt-shaped codegen, explaining benchmark deltas, verifying
+  regressions, running +test -clib=8085, or the user runs /z88dk-tooling.
 ---
 
 # z88dk tooling for 8085 measurement and diagnosis
@@ -14,7 +15,8 @@ description: >
 This skill covers **host tools** used with z88dk when writing or optimising
 8085 (and portable 8080/gbz80) library code. Opcode and coding rules stay in
 **opcode-reference** and **extended-usage**; here the focus is *how to prove*
-what is slow, what changed, and what is correct.
+what is slow, what changed, and what is correct — plus how **`z88dk-copt`**
+shapes compiler output and what library authors must do by hand.
 
 Assume a built z88dk tree with `bin/` on `PATH` and `ZCCCFG` pointing at
 `lib/config` (see env below).
@@ -55,15 +57,16 @@ and `math32_8085.lib` into `lib/clibs/` the same way.
 | Call-level profile (function enter/leave) | ticks debugger **`profiler`** (needs debug symbols) |
 | Confirm a symbol is **actually linked** | `.map` + `z88dk-z80nm` on `.o` / `.lib` |
 | See codegen / library expansion | `z88dk-dis`, assembler **`-l` listing**, map file refs |
+| Peephole compiler output (sccz80 path) | **`z88dk-copt`** + `lib/z80rules.*` (see §9) |
 | Correctness of float/int libraries | `test/suites/math` (`make test_*_8085.bin` etc.) |
 | Publishable microbenchmarks | `support/benchmarks/*` + classic `+test` TIMER recipes |
 | A/B “did this patch matter?” | Swap one `.asm`, rebuild lib, **same** `zcc` line, compare ticks **and** `cmp` binaries |
 | Assembler synthetic expansion | `z88dk-z80asm -m8085 -l` and read the `.lis` opcodes |
 
 Other z88dk host tools that often help in this workflow: **`zcc`** (driver),
-**`z88dk-z80asm`**, **`z88dk-sccz80`**, **`z88dk-dis`**, **`z88dk-z80nm`**,
-**`z88dk-appmake`**, **`z88dk-lib`**, optional **`z88dk-gdb`** for source-level
-debug when the target supports it.
+**`z88dk-z80asm`**, **`z88dk-sccz80`**, **`z88dk-copt`**, **`z88dk-dis`**,
+**`z88dk-z80nm`**, **`z88dk-appmake`**, **`z88dk-lib`**, optional **`z88dk-gdb`**
+for source-level debug when the target supports it.
 
 ---
 
@@ -332,6 +335,172 @@ When finishing an optimisation or regression investigation, state:
 
 ---
 
+## 9. `z88dk-copt` — peephole rules and codegen hygiene
+
+`z88dk-copt` is z88dk’s **text peephole optimiser**: it reads assembly on
+**stdin**, applies pattern → replacement rules from named files, and writes
+improved assembly on **stdout**. `zcc` runs it on **compiler-generated** output
+(sccz80 `.opt` / similar), not on hand-written library sources.
+
+Source and man page: `src/copt/copt.c`, `src/copt/copt.1`. Rule files live under
+`lib/z80rules.*` (plus target/CPU/user extras).
+
+### What agents must remember when writing library asm
+
+| Fact | Consequence |
+|------|-------------|
+| **Library `.asm` under `libsrc/` is assembled directly** | copt **never** runs on it in the normal build |
+| **Dead moves stay dead** | Write clean sequences yourself (`ld b,a` then `ld a,b` is never cleaned up later) |
+| **Whitespace is not a style war** | Match the **target file**: tabs vs spaces, column layout, comment style. Most classic `libsrc/l/sccz80/**` and math32 cores use **spaces** (often four-space indent). copt rule files and sccz80 dumps use **tabs** — that is only for matching those pipelines |
+| **copt matches whole lines (mostly literal)** | Trailing comments, different spacing, or a space-indented library line will not match a tab rule. That is irrelevant when editing library sources in their native style |
+
+Do **not** reformat a library file to “look like copt input”. Follow neighbours
+in the same file. Do **do** apply the *semantic* lessons of the rules (remove
+redundancies copt would drop on compiler output).
+
+### How a rule is written
+
+```text
+	<pattern line 1>
+	<pattern line 2>
+	...
+=
+	<replacement line 1>
+	...
+
+```
+
+- Blank line ends the rule. Lines starting with `;;` (column 0) are comments in
+  the rule file.
+- **`%1`…`%9`** — wildcards; same index must bind the same text within one fire.
+- **`%%`** — literal `%`.
+- **`%eval(...)`**, **`%check min <= %n <= max`**, **`%is` / `%not`**,
+  **`%notSame`**, **`%cpu` / `%notcpu`** — preconditions (evaluated after binds).
+- **`%title ...`** — label for debug; does not match source.
+- **`%L` / `%M` / `%N`** in replacements — unique labels.
+- **`%activate` / `%once`** — dynamic rule activation (advanced; see man page).
+
+Matching walks the input **in reverse** along each candidate window so shorter
+cascades can fire after a replacement without backing up far. Multiple passes
+run until quiet (capped).
+
+### CLI (manual experiments)
+
+```bash
+# Rules as argv; source on stdin. -m sets %cpu checks; -D prints firings.
+z88dk-copt -m8085 [-D] lib/z80rules.9 lib/z80rules.2 lib/z80rules.1 \
+  lib/z80rules.0 [lib/z80rules.8] < input.asm > output.asm
+```
+
+Expect **no change** if you feed space-indented, commented library asm into
+rules written for sccz80 tab style — that is expected, not a broken tool.
+
+### Which rule files `zcc` applies (classic sccz80 path)
+
+Configured via `COPTEXE` / `COPTRULES*` (defaults in `src/zcc/zcc.c`):
+
+| Peephole `-O` | Rule set (order matters) |
+|--------------:|--------------------------|
+| 0 | `z80rules.9` |
+| 1 | `.9` + `.1` |
+| 2 (common default in target `OPTIONS`) | `.9` + `.2` + `.1` |
+| 3+ | `.9` + `.2` + `.1` + `.0` |
+
+Also, when present:
+
+| Config | Role |
+|--------|------|
+| `COPTRULESINLINE` → `z80rules.8` | sccz80 **inline ints** path only (`c_sccz80_inline_ints`); otherwise not loaded |
+| `COPTRULESTARGET` | Target-specific (e.g. z88) |
+| CPU map rules | CPU-specific if the file exists |
+| `-custom-copt-rules=` | User file |
+
+Other compilers have their own sets (`lib/sdcc/…`, `80cc_rules.1`,
+`clang_rules.1`, …). This section is about the classic **z80rules.*** family.
+
+Rough file roles:
+
+| File | Role |
+|------|------|
+| `z80rules.9` | Intrinsics / RST-style substitutions (always first among the numbered set) |
+| `z80rules.2` | Aggressive / higher-O peepholes (includes dead re-load into same dest) |
+| `z80rules.1` | Large main sccz80 peephole set |
+| `z80rules.0` | Extra / lower-priority patterns (linked as `COPTRULES3`) |
+| `z80rules.8` | Inline common sccz80 helpers **and** a few general cleanups |
+| `z80rules.frame` | Tiny frame-related snippet (not the main pipeline by itself) |
+
+### Rules that matter for register hygiene (codegen lessons)
+
+These teach what **not** to emit in hand-written cores either.
+
+**Copy-back is a no-op** (`z80rules.8` — only if that file is loaded):
+
+```asm
+	ld	%1,%2
+	ld	%2,%1
+=
+	ld	%1,%2
+```
+
+Example: `ld b,a` / `ld a,b` → keep only `ld b,a`. On 8085/8080/gbz80 long-div
+prologue this is exactly the redundant high-byte re-load after building BC.
+
+**Register-specific variant** already in `z80rules.0` (always available at `-O3+`):
+
+```asm
+	ld	l,a
+	ld	a,l
+=
+	ld	l,a
+```
+
+Only **L↔A**, not a general B/C/D/E/H rule — so do not assume every copy-back is
+stripped unless `.8` is active or you remove it by hand.
+
+**Dead second load into the same destination** (`z80rules.2`):
+
+```asm
+	ld	%1,%2
+	ld	%1,%3
+=
+	ld	%1,%3
+```
+
+**Implication for new code:** after `ld r,a` (or any `ld dst,src`), if the next
+instruction only reloads `src` from `dst` so you can `or` / test the original,
+**drop the reload** — `A` (or the source) still holds the value. Same for any
+symmetric copy-back. copt may clean that on sccz80 output; **library authors
+must**.
+
+### Using copt knowledge while generating or reviewing code
+
+1. **Hand-written `libsrc/**`**: write the optimised form yourself; match file
+   whitespace/comments; never rely on a later copt pass.
+2. **Compiler dumps / `.opt` / `.asm` from `zcc`**: expect copt to have already
+   run; remaining slop is either not covered by rules, blocked by comments/labels
+   between instructions, or needs a new rule / better frontend codegen.
+3. **Proposing new copt rules**: put them in the right file for the intended `-O`
+   level; use tab + sccz80 operand style so they match compiler output; add
+   `%cpu` / `%notcpu` when a pattern is unsafe on 8080/8085/gbz80.
+4. **Experimentation**: normalise a snippet to tab style **only in a temp file**
+   if you want to see whether existing rules fire; do not commit that reformat
+   into library sources that use spaces.
+5. **A/B of “copt would fix this”**: if a library bug is a pure redundancy the
+   rules already express, the fix is a one-line delete in the library — same
+   binary effect as copt on compiler text, without depending on rule load order.
+
+### Related pitfalls (copt vs library)
+
+| Pitfall | Note |
+|---------|------|
+| Reformatting library asm to tabs “so copt can see it” | Wrong pipeline; breaks house style |
+| Assuming `-O2` applies `z80rules.8` | `.8` is inline-ints path, not default `-O2` |
+| Assuming all copy-backs die at `-O3` | Only `l,a`/`a,l` in `.0` unless `.8` is on |
+| Inserting labels or `;` comments between pattern lines | Blocks whole-line multi-line matches on compiler output |
+| Using copt output as proof a library edit is unnecessary | Library never sees that pass |
+
+---
+
 ## Related
 
 - Opcode map / flags: **opcode-reference**
@@ -341,3 +510,5 @@ When finishing an optimisation or regression investigation, state:
   `z88dk-ticks` interactive `hotspot on` usage
 - Classic benchmarks: `support/benchmarks/` in the z88dk tree
 - Math suite: `test/suites/math/`
+- copt rules: `lib/z80rules.{0,1,2,8,9,frame}` · driver wiring: `src/zcc/zcc.c`
+  (`apply_copt_rules`, `COPTRULES*`)

@@ -264,6 +264,7 @@ The z88dk-z80asm assembler has a MACRO capability, and it has the capability to 
 6. **`rla` / `rra` / `rlca` / `rrca` do not set Z** — never `rla; jp z,...`. Test with `or a` / `and a` / explicit mask first, or use `inc`/`dec` on a copy.
 7. **No `exx`, IX, IY, `djnz`** — second long operand on stack; counted loops via `dec b`/`jp nz` or K pre-dec (§5).
 8. **Forward overlapping stack copy corrupts** — see multi-word frame rebuild above.
+9. **No copt pass on library asm** — hand-written `libsrc/**` is assembled as-is. Remove copy-backs (`ld r,a` then `ld a,r`) and other dead moves yourself. Match the **target file’s** whitespace (spaces vs tabs); do not reformat to sccz80/copt tab style. See **z88dk-tooling** §9.
 
 ## Preference order (when writing 8085-only code)
 
@@ -279,4 +280,5 @@ The z88dk-z80asm assembler has a MACRO capability, and it has the capability to 
 ## Related
 
 - Opcode map, flags, cycles: **`/opcode-reference`**
+- Host tools, measurement, **copt / z80rules**: **`/z88dk-tooling`**
 - Design notes: [feilipu.me — 8085 Software](https://feilipu.me/2021/09/27/8085-software/)
