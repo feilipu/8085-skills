@@ -505,10 +505,11 @@ must**.
 
 - Opcode map / flags: **opcode-reference**
 - 8085 coding rules / stack / synthetics: **extended-usage**
+- Target CRT / serial / disk / `target_io` architecture: **[z88dk](../z88dk/SKILL.md)**
 - Upstream z88dk: https://github.com/z88dk/z88dk  
 - Hotspot discussion (ticks debugger): z88dk issue tooling notes around
   `z88dk-ticks` interactive `hotspot on` usage
 - Classic benchmarks: `support/benchmarks/` in the z88dk tree
-- Math suite: `test/suites/math/`
+- Math suite: `test/suites/math/` · I/O suite: `test/suites/target_io/`
 - copt rules: `lib/z80rules.{0,1,2,8,9,frame}` · driver wiring: `src/zcc/zcc.c`
   (`apply_copt_rules`, `COPTRULES*`)
