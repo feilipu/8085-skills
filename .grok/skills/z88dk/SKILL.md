@@ -2,11 +2,13 @@
 name: z88dk
 description: >
   z88dk newlib vs classic architecture for targets, CRT m4 driver instantiation,
-  serial/character FILE* wiring, disk fcntl (asm_target_open, open_max, FCB vs
-  FatFs), mixed multi-CPU trees, and target_io / ticks verification. Use when
-  migrating targets, adding serial or disk drivers, debugging fopen/open link
-  errors, dual-stack file I/O, CP/M stdio devices, or reviewing CRT/config lists.
-  Complements z88dk-tooling (measure) and extended-usage (8085 codegen).
+  serial/character FILE* wiring, hybrid 8085 consoles, cooked line input
+  (getline vs fgets_cons), static stdio heap sizing, disk fcntl (asm_target_open,
+  open_max, FCB vs FatFs), mixed multi-CPU trees, and target_io / ticks
+  verification. Use when migrating targets, adding serial or disk drivers,
+  debugging fopen/open or console-after-fopen, dual-stack file I/O, CP/M stdio
+  devices, dual-CPU firmware shells, or reviewing CRT/config lists. Complements
+  z88dk-tooling (measure) and extended-usage (8085 codegen).
 ---
 
 # z88dk target I/O architecture (newlib + classic)
@@ -114,6 +116,66 @@ When a CRT mixes **classic** `fgetc_cons`/`fputc_cons` with newlib-style startup
 - FILE init flags must match classic expectations (**`18` / `20`** = `_IOSYSTEM|_IOREAD` / `_IOWRITE`).
 - Wrong flags (`19`/`21` with spurious `_IOUNGETC`) made first `getchar` return NUL.
 - Hybrid clib lists must **not** pull full newlib fcntl/stdio/threads.
+- Build: classic `<stdio.h>` must win include order (`-I…/include` **before** `_DEVELOPMENT/common`) when the hybrid needs classic `stdin`/`stdout` objects.
+
+### Cooked line input: newlib vs classic (general)
+
+| World | Line API | Who echoes / edits |
+|-------|----------|--------------------|
+| **Newlib** | POSIX **`getline` / `getdelim`** | **console_01** (line mode, echo, BS, CR/LF cook) via tied oterm |
+| **Classic** | **No `getline`** | **`fgets` on stdin → `fgets_cons`** (echo, DEL, optional soft cursor) |
+| **Classic raw** | `fgetc` / `fgetc_cons` | **No** line editor — app must implement if needed |
+
+**Rules of thumb**
+
+1. **`getline` is newlib-only.** Never expect it on 8080/8085 classic products.
+2. **One cook layer only.** If the driver/`fgets_cons` already echoes, do **not** also echo in app code (double echo).
+3. Hybrid CRTs that only bind `fgetc_cons`/`fputc_cons` are **raw**. App-level line readers (e.g. shell `ya_getline`) are compensating for classic, not for the CPU.
+4. Prefer **`fgets` / `fgets_cons`** on classic instead of reimplementing line edit. On serial targets, disable soft cursor if needed (`CLIB_DISABLE_FGETS_CURSOR=1` — already set for `rc2014-8085`).
+5. Align dual-CPU apps (Z80 newlib + 8085 classic) at a **single call site** with `#ifdef`, not by linking newlib stdio into 8085 images.
+
+### Dual-port FILE* vs classic `ttyin` macros
+
+| | Newlib CRT | Classic hybrid (e.g. `uart85`) |
+|--|------------|--------------------------------|
+| Second port | Real drivers: `m4_rc_01_input_uartb(_ttyin, …)` etc. | Often **only** stdin/out/err → primary UART/ACIA |
+| `ttyin` / `ttyout` in headers | `extern FILE *` | Classic macros → **`_sgoioblk[3]`…** slots |
+| Meaning | Instantiated streams | **Declaration/slots ≠ working UARTB console** |
+
+`fgetc` on classic special-cases **stdin** → `fgetc_cons`. Assigning `input = ttyin` does **not** create a second cooked port unless the CRT initialises that slot and a driver path exists. For dual-port on hybrid: either an **active-console** global in `fgetc_cons`, or real second-stream CRT work — do not copy newlib’s `input = ttyin` pattern blindly.
+
+### CP/M IOBYTE seeds (firmware shells)
+
+Shell may seed **`bios_iobyte`** before handing off to CCP; BIOS copies it to page-0 IOBYTE.
+
+- CON is **low 2 bits** (CRT vs TTY, etc.).
+- Hardware-specific high bits (e.g. 8085 module **LST → SOD**) may require seeds like **`0x81` / `0x80`**, not bare `1` / `0`. Match the BIOS `list`/`const` decode, not “Z80 values”.
+
+---
+
+## 2b. Newlib static stdio heap sizing (FDSTRUCT committed)
+
+Each static driver m4 places a heap block:
+
+```text
+[next:2][committed:2][prev:2]  +  FDSTRUCT body (+ edit buffer)
+         \_____ 6-byte header _____/
+```
+
+- **`committed`** (and `__I_FCNTL_HEAP_SIZE` add) must equal **header + body** bytes.
+- **Oversized** committed → free = next − (block+committed) **underflows** → later `open`/`fopen` can corrupt the next FDSTRUCT (e.g. stdout). Classic bug: `cpm_00_input_cons` used `$3+29` instead of **`$3+27`**.
+- **Undersized** committed → free block accounting wrong (FZX once claimed 63 for a 64-byte block).
+
+| Family | Body (typical) | committed |
+|--------|----------------|-----------|
+| character_00 / simple out | 17 | **23** |
+| console_01 input + edit buf `$4` | 28+`$4` | **`$4+34`** |
+| `cpm_00_input_cons` (BDOS buf `$3+1`) | 21+`$3` | **`$3+27`** |
+| zx inkey / lastk | … | `$4+41` / `$4+36` |
+
+**Verify:** map spans between `__i_fcntl_heap_N` and `_N+1` must equal the formula (with default edit buf, often 64 → first span 91 or 98, etc.). Multi-arg `defb \`$a, $b\`` counts as multiple bytes when hand-checking m4.
+
+m4 comments: **do not put unquoted commas** in macro body text (breaks m4 argument parsing).
 
 ---
 
@@ -246,7 +308,9 @@ CP/M outputs need **`.com`** for ticks CP/M mode; some newlib links produce `*_C
 - [ ] CRT m4 instantiates FILE* + FDSTRUCT; dups for err streams
 - [ ] Public `stdio.h` names match what the CRT actually builds
 - [ ] Multi-port: second triple uses `tty*` + `m4_file_dup` for err
-- [ ] Hybrid classic console: FILE flags and list isolation
+- [ ] Hybrid classic console: FILE flags **18/20**, list isolation, classic include order
+- [ ] Line input: newlib `getline` vs classic `fgets_cons` — **one cook layer**; no fake `ttyin` on hybrid
+- [ ] Static heap: each m4 `committed` / `HEAP_SIZE` = body + 6 (map-span check)
 
 **Disk**
 
@@ -261,6 +325,12 @@ CP/M outputs need **`.com`** for ticks CP/M mode; some newlib links produce `*_C
 - [ ] Classic CP/M: default subtype only unless a specific machine is in scope
 - [ ] Extend serial/disk cases only where the CRT/driver supports them
 - [ ] ticks CPU model (`-m8085` when relevant)
+
+**Dual-CPU firmware shells (Z80 newlib + 8085 classic)**
+
+- [ ] Shared app logic; platform glue only for CRT/IOBYTE/banners
+- [ ] Do **not** link newlib stdio into 8085 images
+- [ ] Align line-read at one `#ifdef` call site; verify echo/BS on both
 
 ---
 
