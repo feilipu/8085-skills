@@ -14,7 +14,7 @@ WORDS
 - Use the short common word: start (not begin/commence/initiate), use (not utilize/leverage), help (not facilitate), make sure (not ensure), before (not prior to), after (not subsequent to), about (not regarding/concerning), get (not obtain/acquire), show (not demonstrate), also (not additionally/furthermore/moreover).
 - Give each word one meaning. "fall" means to move down, not to decrease.
 - No marketing adjectives: seamless, robust, powerful, cutting-edge, effortless, world-class, next-generation, revolutionary.
-- American spelling.
+- British English spelling.
 
 VERBS
 - Active voice. "the parser reads the file", not "the file is read by the parser".
