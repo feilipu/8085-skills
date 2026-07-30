@@ -4,11 +4,13 @@ description: >
   z88dk newlib vs classic architecture for targets, CRT m4 driver instantiation,
   serial/character FILE* wiring, hybrid 8085 consoles, cooked line input
   (getline vs fgets_cons), static stdio heap sizing, disk fcntl (asm_target_open,
-  open_max, FCB vs FatFs), mixed multi-CPU trees, and target_io / ticks
-  verification. Use when migrating targets, adding serial or disk drivers,
-  debugging fopen/open or console-after-fopen, dual-stack file I/O, CP/M stdio
-  devices, dual-CPU firmware shells, or reviewing CRT/config lists. Complements
-  z88dk-tooling (measure) and extended-usage (8085 codegen).
+  open_max, FCB vs FatFs), mixed multi-CPU trees, target_io / ticks verification,
+  and library source layout (one major function per file under libsrc). Use when
+  migrating targets, adding serial or disk drivers, writing or reorganising
+  library asm/C under libsrc (math, sccz80, target), debugging fopen/open or
+  console-after-fopen, dual-stack file I/O, CP/M stdio devices, dual-CPU
+  firmware shells, or reviewing CRT/config lists. Complements z88dk-tooling
+  (measure) and extended-usage (8085 codegen).
 ---
 
 # z88dk target I/O architecture (newlib + classic)
@@ -18,6 +20,39 @@ I/O. **Measurement** stays in **[z88dk-tooling](../z88dk-tooling/SKILL.md)**.
 **8085 codegen** stays in **extended-usage** / **opcode-reference**.
 
 Assume a built tree with `bin/` on `PATH` and `ZCCCFG` → `lib/config`.
+
+---
+
+## 0. Library source layout — one major function per file
+
+House style across z88dk **`libsrc/`** (classic and newlib): **one major function
+(or one logical operation) per source file**. Do not invent a different layout
+when adding or splitting library code.
+
+### What counts as “one major function”
+
+| In one file | Separate files |
+|-------------|----------------|
+| The operation’s public entry (or entries) | Unrelated operations (e.g. mul vs add) |
+| **Callee** and non-callee / sccz80–sdcc glue for that op when they live with the core | Different ops “to save files” |
+| f16 + f24 (or similar) variants of the **same** op | Pack/expand family may share a conversion file if that is the existing pattern for that library |
+| Helpers that belong only to that op (local or `PUBLIC` if other modules call them) | Helpers that are really a second feature → own file |
+
+Examples (math16-style, but the rule is general):
+
+- `asm_f16_mul.asm` — half mul callee, f24 mul, integer mulu helper  
+- `asm_f16_add.asm` — add/sub callee + f24 add  
+- `asm_f16_compare.asm` — compare + compare_callee  
+
+### Agent rules
+
+1. **Match neighbours** in the same directory: filename ≈ symbol / operation name.
+2. **Do not** merge unrelated ops into one `.asm`/`.c` to share a few lines.
+3. **Do not** split a single op across files just to isolate a 10-line helper unless the tree already does that.
+4. CPU-specific copies (`asm/z80/`, `asm/8085/`, `l/sccz80/7-8085/`, …) keep the **same one-op-per-file map**; implementations may differ by ISA, not by inventing a parallel file taxonomy.
+5. List files (`.lst`) and products reference modules by path — one op per file keeps nm/map/hotspot attribution sane.
+
+This is an **implicit z88dk library requirement**, not a math16-only note. Apply it to sccz80 runtime, float cores, target drivers, and new work under `libsrc/`.
 
 ---
 

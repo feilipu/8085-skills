@@ -17,7 +17,7 @@ The z88dk-z80asm assembler supports MACROs and "synthetic" opcodes. Synthetics a
 | **opcode-reference** | `.grok/skills/opcode-reference/SKILL.md` | Full 256-opcode map, Zilog mnemonics, flags (S Z K A P V C), undocumented ops, timings |
 | **extended-usage** | `.grok/skills/extended-usage/SKILL.md` | Stack-only locals, `ld de,sp+*`, frame rebuild, K-flag loops, mul/div building blocks, pitfalls |
 | **z88dk-tooling** | `.grok/skills/z88dk-tooling/SKILL.md` | `z88dk-ticks`, hotspots, maps/nm/disasm, math suite, benchmarks, A/B measurement pitfalls, **`z88dk-copt` / `lib/z80rules.*`** (compiler peephole vs hand-written library asm; match target-file whitespace) |
-| **z88dk** | `.grok/skills/z88dk/SKILL.md` | Newlib vs classic trees, CRT m4 **serial/FILE\*** instantiation, **disk fcntl** (`asm_target_open`, `open_max`/`fopen_max`, FCB vs FatFs), dual-stack policy, **`target_io`** testing, migration isolation |
+| **z88dk** | `.grok/skills/z88dk/SKILL.md` | Newlib vs classic trees, CRT m4 **serial/FILE\*** instantiation, **disk fcntl** (`asm_target_open`, `open_max`/`fopen_max`, FCB vs FatFs), dual-stack policy, **`target_io`** testing, migration isolation, **`libsrc` one major function per file** |
 | **ste-writing** | `.grok/skills/ste-writing/SKILL.md` | Prose only (docs, READMEs, PR text, release notes, comments — **not** code). ASD-STE100 Simplified Technical English. Modes: **strict** (procedures, safety, errors) and **STE-flavored** (general docs). Removes "AI slop" form without changing technical truth |
 
 Full opcode tables: `.grok/skills/opcode-reference/references/opcodes.md`
