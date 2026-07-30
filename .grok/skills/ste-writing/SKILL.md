@@ -27,7 +27,7 @@ SENTENCES
 - No contractions. Use articles: a, an, the, this, these.
 
 PUNCTUATION
-- No semicolons. Write two sentences. (Note: the em dash is not banned by STE, only the semicolon is — add "no em dash" yourself if you want it gone.)
+- No semicolons. Write two sentences.
 
 STRUCTURE
 - One topic per paragraph, max six sentences. For steps, use a numbered vertical list, one action per item, imperative form. Put a condition before its command.
@@ -41,7 +41,7 @@ Write only the requested text. No preamble, no summary, no closing remarks.
 
 ## Self-lint (run before returning text)
 
-1. Any sentence over 20 words? Split it.
+1. Any sentence over 25 words? Split it.
 2. Any semicolon? Replace with a period.
 3. Any contraction? Expand it.
 4. Any passive voice with a known actor? Make it active.
@@ -50,4 +50,4 @@ Write only the requested text. No preamble, no summary, no closing remarks.
 
 The mechanical rules above are lintable and are what removes slop. Full STE also needs human judgment (the right technical noun, whether a sentence "makes good sense") — a checker cannot certify that, and slop is not about that. This skill fixes the FORM of slop. It cannot make a hollow paragraph true.
 
-Free official standard (do not paste it in full; it is copyrighted): https://asd-ste100.org
+Free official standard (copyrighted): https://asd-ste100.org
