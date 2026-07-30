@@ -3,11 +3,13 @@ name: z88dk-tooling
 description: >
   How to use z88dk host tools to measure, profile, and diagnose 8085 (and
   related) code in the z88dk tree: z88dk-ticks timing and debugger, hotspots,
-  map/nm/disassembly, suite tests, A/B library swaps, z88dk-copt peephole rules
-  (and what they mean for hand-written library asm vs compiler output), and
-  common measurement pitfalls. Use when optimising library asm, writing or
-  reviewing sccz80/copt-shaped codegen, explaining benchmark deltas, verifying
-  regressions, running +test -clib=8085, or the user runs /z88dk-tooling.
+  map/nm/disassembly, suite tests, A/B library swaps, math32 multi-CPU force
+  rebuilds, classic +test TIMER benchmarks, wiki number/bold paste rules,
+  z88dk-copt peephole rules (and what they mean for hand-written library asm
+  vs compiler output), and common measurement pitfalls. Use when optimising
+  library asm, writing or reviewing sccz80/copt-shaped codegen, explaining
+  benchmark deltas, verifying regressions, running +test -clib=8085, publishing
+  bench/wiki figures, or the user runs /z88dk-tooling.
 ---
 
 # z88dk tooling for 8085 measurement and diagnosis
@@ -43,8 +45,40 @@ make -C libsrc/classic/z80_crt0s obj/8085-crt0
 cp -f libsrc/8085_crt0.lib lib/clibs/
 ```
 
-Math32 cores live under `libsrc/math/float/math32/`; rebuild via the 8085 lst
-and `math32_8085.lib` into `lib/clibs/` the same way.
+### Math32 / multi-CPU float libs (force rebuild)
+
+Sources: `libsrc/math/float/math32/` (per-CPU under `asm/z80/`, `asm/8085/`, …).
+Shared Z80-family add lives in `asm/z80/d32_fsadd.asm` and is assembled into
+**each** of `math32.lib`, `math32_z80n.lib`, `math32_z180.lib`, `math32_r2ka.lib`,
+`math32_kc160.lib`, … Changing that file requires **rebuilding every product that
+lists it**, not only `math32_8085.lib`.
+
+```bash
+cd libsrc/math/float/math32
+# force one object + relink (example: 8085 add)
+rm -f obj/8085/math/float/math32/asm/8085/f32_fsadd.o ../../../math32_8085.lib
+z88dk-z80asm -d -I"$ZCCCFG/.." -O=obj/8085/x/x/x -I.. -m8085 -D__CLASSIC \
+  @newlibfiles_8085.lst
+TYPE=8085 z88dk-z80asm -d -I"$ZCCCFG/.." -I.. -m8085 \
+  -x../../../math32_8085 @math32.lst
+cp -f ../../../math32_8085.lib ../../../lib/clibs/   # or: make -C libsrc install
+
+# Z80-family products that share asm/z80/d32_fsadd.asm (repeat per CPU)
+for cpu in z80 z80n z180 r2ka kc160; do
+  lst=newlibfiles_${cpu}.lst
+  case $cpu in z80) lst=newlibfiles_z80.lst; lib=math32 ;;
+    *) lib=math32_$cpu ;; esac
+  rm -f obj/$cpu/math/float/math32/asm/z80/d32_fsadd.o ../../../$lib.lib
+  z88dk-z80asm -d -I"$ZCCCFG/.." -O=obj/$cpu/x/x/x -I.. -m$cpu -D__CLASSIC @$lst
+  TYPE=$cpu z88dk-z80asm -d -I"$ZCCCFG/.." -I.. -m$cpu -x../../../$lib @math32.lst
+  cp -f ../../../$lib.lib ../../../lib/clibs/
+done
+```
+
+Or: `make -C libsrc/math/float/math32` then install all `math32*.lib` into
+`lib/clibs/`. After install, **delete** suite/bench `.bin`/`.map` before remeasure.
+
+Prove the object is current: `z88dk-z80nm lib/clibs/math32_8085.lib | rg 'f32_fsadd|ay16_njam'`.
 
 ---
 
@@ -269,18 +303,58 @@ z88dk-ticks -m8085 bench.bin -x bench.map \
   -start TIMER_START -end TIMER_STOP -counter 999999999999
 ```
 
+| Flag / define | Role |
+|---------------|------|
+| `-DSTATIC -DTIMER -D__Z88DK` | Locals + TIMER labels (classic benches) |
+| `--math32` / `--math-mbf32` | Float library (`@{ZCC_LIBCPU}` picks `math32_8085` with `-clib=8085`) |
+| Size | “bytes less page zero” ≈ **binary size** of the TIMER build (`.bin`) |
+| Parallel host work | Fan out independent `zcc`+`ticks` jobs (≈ `nproc` cores); do not share output dirs |
+
 Parent `readme.txt` holds **CLASSIC Z80 / 8085 SUMMARY** tables; full RESULT
-blocks are often duplicated in parent + `z88dk-classic/`.
+blocks are often duplicated in parent + `z88dk-classic/`. Math32 comparison
+tables also live in `libsrc/math/float/math32/readme.md`.
 
 When publishing a library opt:
 
 1. Remeasure **only configs that previously published** (or document why new).
-2. Update **both** summary table and RESULT block (ticks, size, date, note).
+2. Update **both** summary table and RESULT block (**ticks, size, date** only —
+   no policy essays in RESULT text unless the tree already does that).
 3. Report **percentage**: `(old − new) / old × 100` (positive = faster).
 4. Do **not** attribute a delta to a symbol the map does not reference.
+5. Suite gate first: `make test_math32.bin test_math32_8085.bin` (and other
+   CPUs that share the touched `.asm`) → **16/16** before TIMER tables.
 
 Long-running benches (e.g. spectral-norm, pi) need large counters and patience;
 100% CPU with rising runtime is normal, not a hang, if PC is advancing.
+
+### Float energy / accuracy when `printf %f` is broken
+
+Classic 8085 `+test` can fail to link full float printf (`__printf_handle_far_s`
+and similar). For n-body-style energies, dump IEEE bits with `putchar` hex
+(union `float` ↔ `unsigned long`), then convert on the host:
+
+```python
+import struct
+struct.unpack('>f', bytes.fromhex('be2d220a'))[0]  # → −0.16907516…
+```
+
+Do not invent decimal energy from TIMER-only builds (no print path).
+
+### Wiki pages (Benchmarks, Classic Maths Libraries)
+
+Source of truth: tree readmes + `math32/readme.md`. Wiki is a **paste** of
+those numbers.
+
+| Rule | Detail |
+|------|--------|
+| What to refresh | **Numbers, sizes, dates**, and **bold** cells only |
+| Bold (speed) | Best **z80** and best **8085** separately (lowest ticks; **highest KWIPS** for whetstone) |
+| Not bold for speed | **math16**, **z180**, **z80n** (and similar) — listed for comparison only |
+| Prose | Do **not** write “winner” / “winning bold” in notes; bold is enough |
+| Clone | `git clone https://github.com/z88dk/z88dk.wiki.git` — pages `Benchmarks.md`, `Classic--Maths-Libraries.md` |
+
+Local full-replacement drafts may live as untracked `wiki-*.md` in a working
+tree; they are **not** part of the product PR.
 
 ---
 
@@ -315,10 +389,15 @@ Long-running benches (e.g. spectral-norm, pi) need large counters and patience;
 | sccz80 8085 runtime | `libsrc/l/sccz80/7-8085/` | `8085_crt0.lib` → `lib/clibs/` |
 | sccz80 8080 / gbz80 | `8-8080/`, `8-gbz80/` | `8080_crt0.lib` / `gbz80_crt0.lib` |
 | math32 8085 | `libsrc/math/float/math32/` + `newlibfiles_8085.lst` | `math32_8085.lib` |
+| math32 z80 family | same tree + `newlibfiles_{z80,z80n,z180,…}.lst` | `math32.lib`, `math32_z80n.lib`, … |
 | classic tests | `+test -clib=8085` | pulls `test8085_clib` + crt0 + math libs |
 
 After install, **force** recompile of the test/benchmark binary (delete `.bin` /
 `.map`) so `zcc` does not reuse stale objects.
+
+Shared `asm/z80/d32_fsadd.asm` (and similar) → rebuild **all** products that
+include it (z80 / z80n / z180 / r2ka / kc160 / …), then run matching
+`test_math32_*.bin` recipes in parallel if host cores allow.
 
 ---
 

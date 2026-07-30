@@ -5,12 +5,13 @@ description: >
   serial/character FILE* wiring, hybrid 8085 consoles, cooked line input
   (getline vs fgets_cons), static stdio heap sizing, disk fcntl (asm_target_open,
   open_max, FCB vs FatFs), mixed multi-CPU trees, target_io / ticks verification,
-  and library source layout (one major function per file under libsrc). Use when
-  migrating targets, adding serial or disk drivers, writing or reorganising
-  library asm/C under libsrc (math, sccz80, target), debugging fopen/open or
-  console-after-fopen, dual-stack file I/O, CP/M stdio devices, dual-CPU
-  firmware shells, or reviewing CRT/config lists. Complements z88dk-tooling
-  (measure) and extended-usage (8085 codegen).
+  library source layout (one major function per file under libsrc), and math32
+  multi-CPU float library layout/rounding policy. Use when migrating targets,
+  adding serial or disk drivers, writing or reorganising library asm/C under
+  libsrc (math, sccz80, target), debugging fopen/open or console-after-fopen,
+  dual-stack file I/O, CP/M stdio devices, dual-CPU firmware shells, or reviewing
+  CRT/config lists. Complements z88dk-tooling (measure) and extended-usage
+  (8085 codegen).
 ---
 
 # z88dk target I/O architecture (newlib + classic)
@@ -53,6 +54,56 @@ Examples (math16-style, but the rule is general):
 5. List files (`.lst`) and products reference modules by path — one op per file keeps nm/map/hotspot attribution sane.
 
 This is an **implicit z88dk library requirement**, not a math16-only note. Apply it to sccz80 runtime, float cores, target drivers, and new work under `libsrc/`.
+
+---
+
+## 0b. Math32 multi-CPU float library (layout + policy)
+
+Home: `libsrc/math/float/math32/`. Products: `math32.lib` (plain z80) plus
+`math32_{z80n,z180,r2ka,kc160,8085,…}.lib`. Link via **`--math32`**
+(`-lmath32@{ZCC_LIBCPU}` — 8085 selects `math32_8085` automatically; no separate
+`--math32_8085` flag).
+
+### Layout
+
+| Tree | Role |
+|------|------|
+| `asm/z80/` | Z80-family cores; shared by z80n/z180/r2ka/… when the lst points here |
+| `asm/8085/` | Stack-only 8085 cores (no EXX / IX / IY); extended opcodes + synthetics |
+| `c/asm/`, `c/8085/` | Higher functions (C → precompiled asm); 8085 higher via sccz80 only |
+| `newlibfiles_*.lst` | Which modules land in each product |
+
+**CPU-specific** = same *operation* name, different ISA file (same one-op-per-file
+map as §0). Do not invent a second taxonomy for 8085.
+
+### Rounding policy (do not mix casually)
+
+| Class | Policy (current math32) |
+|-------|-------------------------|
+| **mul / sqr / div / poly / sqrt pack** | **IEEE RNE** on residual below the kept mantissa |
+| **add / sub** | **Digi jam-sticky**: lost align/overflow bits → OR **1** into mant LSB; pack has no RNE residual |
+
+Long add chains (e.g. n-body energy) are sensitive to add rounding: jam keeps
+second-energy error ~1e−6 class; full RNE-on-add has been measured to worsen E1
+(~5e−5 class) at higher cost. Prefer matching z80 and 8085 **policy** even when
+engines are not bit-identical.
+
+### Micro-opt patterns that port
+
+| Pattern | Idea | Notes |
+|---------|------|--------|
+| Implicit-1 CF | `ld a,255` / `add a,h` → CF=(exp≠0) instead of `or a` / `jr Z` / `scf` | ~8–9 T per unpack; works on Z80 and 8085 |
+| Z80 non-callee stack load | 3×`pop` + 3×`push` vs `hl=sp+2` walk | ~8 T; 8085 stack-slot paths already different |
+| Hot tiny helpers | Inline 2–4 insn jam sticky at call sites | Saves call/ret; size often net-neutral or smaller |
+| Unused stack pad | Drop frame slots only after proving no SP offsets still use them | Remeasure; fix every `sp+N` comment |
+
+Callee linkage: float helpers that pop a return address + stack args must be
+**`call`’d**, not bare **`jp`** (floor/ceil class bugs). Keep that rule when
+editing pack/add glue.
+
+**Measure / rebuild / wiki:** **[z88dk-tooling](../z88dk-tooling/SKILL.md)**
+(§ math32 rebuild, benches, wiki bold rules). Docs of record:
+`libsrc/math/float/math32/readme.md`, `support/benchmarks/*/readme.txt`.
 
 ---
 
@@ -371,9 +422,11 @@ CP/M outputs need **`.com`** for ticks CP/M mode; some newlib links produce `*_C
 
 ## Related
 
-- Host measurement / ticks / maps / copt: **[z88dk-tooling](../z88dk-tooling/SKILL.md)**
+- Host measurement / ticks / maps / copt / benches / wiki paste: **[z88dk-tooling](../z88dk-tooling/SKILL.md)**
 - 8085 coding / stack rules: **[extended-usage](../extended-usage/SKILL.md)**
 - Opcode map: **[opcode-reference](../opcode-reference/SKILL.md)**
 - Upstream: https://github.com/z88dk/z88dk  
+- Math32 tree: `libsrc/math/float/math32/` (see `readme.md`)
 - Example dual-stack notes: `libsrc/_DEVELOPMENT/EXAMPLES/z80/stdio_target/readme.md`  
-- Suite: `test/suites/target_io/`
+- Suites: `test/suites/target_io/`, `test/suites/math/`
+- Wiki: https://github.com/z88dk/z88dk/wiki (Benchmarks, Classic--Maths-Libraries)
