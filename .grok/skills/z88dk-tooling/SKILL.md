@@ -568,6 +568,37 @@ must**.
    rules already express, the fix is a one-line delete in the library — same
    binary effect as copt on compiler text, without depending on rule load order.
 
+### Before finalising hand-coded library work (required)
+
+Hand-written **math16 / math32 / sccz80 runtime** asm is **not** passed through
+`z88dk-copt`. Before calling an edit done (and before staging / TIMER publish):
+
+1. **Scan** the touched hand sources for **copt-equivalent** idioms (semantic
+   matches to `lib/z80rules.{0,1,2,8}`, not mechanical tab reformatting).
+2. **Apply** safe cleanups in the library file itself. Typical wins:
+
+| Smell | Prefer |
+|-------|--------|
+| `ld r,a` then `ld a,r` (copy-back) | Drop second insn (`z80rules.8` / `.0`) |
+| `add a,a` / `rla` then `ld e,a` then **`ld a,e`** before next shift/test | Drop `ld a,e` — **A** still holds the value |
+| `ld b,a` then `ld a,b` when A unchanged | Drop `ld a,b` |
+| `push de` / `pop hl` (DE→HL, DE dead) | `ex de,hl` (or `ld h,d` / `ld l,e` if DE must live) |
+| `push hl` / `pop bc` (HL→BC) | synthetic **`ld bc,hl`** |
+| Triple unstack ending `push hl` / `pop bc` / `pop de` / `pop hl` | `ld bc,hl` then two pops |
+| `ld h,0` / `ld l,0` (and DE/BC pairs) | `ld hl,0` / `ld de,0` / `ld bc,0` |
+| Dead second `ld` into same dest | Keep only the last load (`z80rules.2`) |
+
+3. **Do not** blindly apply `ld a,0` → `xor a`: `ld` **preserves** flags; `xor a`
+   **clears C**. Unsafe before `sbc` / `rla` / `rra` that need the prior carry
+   (common in float sign / multiprecision negate paths).
+4. **Skip** intentional stack peeks (`pop de` / `push de`) and real callee
+   argument pushes — those are not dead transfers.
+5. **Gate**: suite / probe on the CPUs that link the objects (e.g.
+   `test_math32_8085.bin` after 8085 math32 edits).
+
+Ignore sccz80/sdcc **generated** dumps under `c/asm/` for this scan; fix or
+regenerate those only via the C sources / rebuild pipeline.
+
 ### Related pitfalls (copt vs library)
 
 | Pitfall | Note |
@@ -577,6 +608,7 @@ must**.
 | Assuming all copy-backs die at `-O3` | Only `l,a`/`a,l` in `.0` unless `.8` is on |
 | Inserting labels or `;` comments between pattern lines | Blocks whole-line multi-line matches on compiler output |
 | Using copt output as proof a library edit is unnecessary | Library never sees that pass |
+| Shipping hand asm without a copt-equivalent scan | Required finalisation step above |
 
 ---
 

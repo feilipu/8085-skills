@@ -264,7 +264,7 @@ The z88dk-z80asm assembler has a MACRO capability, and it has the capability to 
 6. **`rla` / `rra` / `rlca` / `rrca` do not set Z** — never `rla; jp z,...`. Test with `or a` / `and a` / explicit mask first, or use `inc`/`dec` on a copy.
 7. **No `exx`, IX, IY, `djnz`** — second long operand on stack; counted loops via `dec b`/`jp nz` or K pre-dec (§5).
 8. **Forward overlapping stack copy corrupts** — see multi-word frame rebuild above.
-9. **No copt pass on library asm** — hand-written `libsrc/**` is assembled as-is. Remove copy-backs (`ld r,a` then `ld a,r`) and other dead moves yourself. Match the **target file’s** whitespace (spaces vs tabs); do not reformat to sccz80/copt tab style. See **z88dk-tooling** §9.
+9. **No copt pass on library asm** — hand-written `libsrc/**` is assembled as-is. Remove copy-backs (`ld r,a` then `ld a,r`) and other dead moves yourself. Match the **target file’s** whitespace (spaces vs tabs); do not reformat to sccz80/copt tab style. **Before finalising** any hand-coded math16/math32 (or similar) edit: scan for copt-equivalent wins (`ex de,hl` / `ld bc,hl` instead of push/pop transfers; drop `ld a,e` after `ld e,a`; pair zeros → `ld hl,0`; etc.) and run the matching suite. Do **not** use `xor a` for `ld a,0` when CF must survive. Full checklist: **z88dk-tooling** §9 (“Before finalising hand-coded library work”).
 
 ## Preference order (when writing 8085-only code)
 
