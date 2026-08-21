@@ -1,6 +1,9 @@
 ---
-name: ste-writing
-description: Rewrite prose (docs, READMEs, PR descriptions, error messages, release notes, comments — never code) into ASD-STE100 Simplified Technical English to remove "AI slop". Use when asked to make writing not sound like AI, make docs clear or plain, enforce a controlled writing style, or write technical documentation that reads human. Two modes — strict (procedures/safety) and STE-flavored (general prose).
+name: style-ste-writing
+description: >
+  Rewrite prose (docs, READMEs, PR descriptions, error messages, release notes,
+  comments — never code) into ASD-STE100 Simplified Technical English to remove
+  AI slop. Modes: strict (procedures/safety) and STE-flavored (general prose).
 ---
 
 # ste-writing
@@ -51,3 +54,4 @@ Write only the requested text. No preamble, no summary, no closing remarks.
 The mechanical rules above are lintable and are what removes slop. Full STE also needs human judgment (the right technical noun, whether a sentence "makes good sense") — a checker cannot certify that, and slop is not about that. This skill fixes the FORM of slop. It cannot make a hollow paragraph true.
 
 Free official standard (copyrighted): https://asd-ste100.org
+

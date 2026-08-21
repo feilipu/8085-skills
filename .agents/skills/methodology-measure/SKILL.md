@@ -1,22 +1,17 @@
 ---
-name: z88dk-tooling
+name: methodology-measure
 description: >
-  How to use z88dk host tools to measure, profile, and diagnose 8085 (and
-  related) code in the z88dk tree: z88dk-ticks timing and debugger, hotspots,
-  map/nm/disassembly, suite tests, A/B library swaps, math32 multi-CPU force
-  rebuilds, classic +test TIMER benchmarks, wiki number/bold paste rules,
-  z88dk-copt peephole rules (and what they mean for hand-written library asm
-  vs compiler output), and common measurement pitfalls. Use when optimising
-  library asm, writing or reviewing sccz80/copt-shaped codegen, explaining
-  benchmark deltas, verifying regressions, running +test -clib=8085, publishing
-  bench/wiki figures, or the user runs /z88dk-tooling.
+  How to measure and prove z88dk library changes: z88dk-ticks TIMER/hotspots,
+  map/nm proof, suite gates, A/B library swaps, math32 multi-CPU rebuilds,
+  classic +test benchmarks, wiki number paste rules. Use when optimising,
+  explaining deltas, or running +test -clib=8085 benches.
 ---
 
-# z88dk tooling for 8085 measurement and diagnosis
+# Methodology — measure, A/B, benches
 
 This skill covers **host tools** used with z88dk when writing or optimising
 8085 (and portable 8080/gbz80) library code. Opcode and coding rules stay in
-**opcode-reference** and **extended-usage**; here the focus is *how to prove*
+**`cpu-8085`**; here the focus is *how to prove*
 what is slow, what changed, and what is correct — plus how **`z88dk-copt`**
 shapes compiler output and what library authors must do by hand.
 
@@ -93,7 +88,7 @@ Prove the object is current: `z88dk-z80nm lib/clibs/math32_8085.lib | rg 'f32_fs
 | See codegen / library expansion | `z88dk-dis`, assembler **`-l` listing**, map file refs |
 | Peephole compiler output (sccz80 path) | **`z88dk-copt`** + `lib/z80rules.*` (see §9) |
 | Correctness of float/int libraries | `test/suites/math` (`make test_*_8085.bin` etc.) |
-| Publishable microbenchmarks | `support/benchmarks/*` + classic `+test` TIMER recipes |
+| Publishable microbenchmarks | `support/benchmarks/*` + classic `+test` TIMER recipes; matrix scripts under `.agents/scripts/` |
 | A/B “did this patch matter?” | Swap one `.asm`, rebuild lib, **same** `zcc` line, compare ticks **and** `cmp` binaries |
 | Assembler synthetic expansion | `z88dk-z80asm -m8085 -l` and read the `.lis` opcodes |
 
@@ -115,9 +110,13 @@ for library and benchmark work.
 |------|-----|
 | (default) | Z80 |
 | `-m8085` | 8085 (required for 8085 binaries) |
+| `-mz80n` / `-mz180` | Next / Z180 (HW mul timings) |
 | `-m8080`, `-mgbz80`, … | Matching classic clibs |
 
 Wrong model → wrong illegal-opcode behaviour and wrong timings.
+
+**CPU flag before the binary path:**  
+`z88dk-ticks -m8085 prog.bin …` — not `… prog.bin -m8085` (else “File not found: -m8085”).
 
 ### Timed region (preferred)
 
@@ -152,15 +151,24 @@ z88dk-ticks -m8085 prog.bin
 Use for correctness (`printf` / test harness). Prefer TIMER bounds for
 performance so CRT and I/O do not dominate.
 
+**Default `-counter` is 100000000.** A whole-program `+test` run with no
+`-counter` stops there and used to print a bare `100000000` (now
+`Ticks: … (counter limit)`). That is **not** program output. n-body
+`-DPRINTF` with n≥~125 is ~160M+ T-states, so the second `%.9f` never
+runs unless you pass `-counter 999999999999`. Isolated `%f` and n=100
+are under the cap and look fine.
+
 ### Common pitfalls
 
-1. **Missing `-m8085`** on an 8085 binary.
+1. **Missing `-m8085` / `-mz80n` / `-mz180`** on a non-Z80 binary, or flag **after** the binary path.
 2. **Start/end swapped** or wrong label (`TIMER_END` vs `TIMER_STOP` typos in docs).
-3. **Counter too small** → truncated measurement near the counter value.
+3. **Counter too small / default 1e8** → run stops mid-loop; stdout `10000000x` looks like a dead `%f`.
 4. **Comparing different `zcc` lines** (e.g. with/without `--opt-code-speed`) and
    blaming a library edit.
 5. **Historical published ticks** vs today’s compiler/lib — always remeasure both
    sides of a patch on the **same** toolchain revision when attributing a delta.
+6. **Parallel `zcc` in one cwd** — shared `zcc_opt.def` / temps → flaky link errors
+   (undefined `dmul` / f48). Build sequential or isolate workdirs.
 
 ---
 
@@ -269,15 +277,23 @@ Z80 CB ops slipped into an 8085 file.
 
 ```bash
 cd test/suites/math
-make test_math32_8085.bin    # IEEE math32 on 8085
+make test_math32.bin test_math32_8085.bin    # IEEE math32 classic +test
+make test_math16.bin test_math16_8085.bin     # half float when f16 cores change
+make test_math32_rc2014_CODE.bin             # sccz80 **newlib** + math32 (+rc2014 -clib=new)
+# optional newlib math16 (no Makefile target — mirror math32 rc2014 recipe):
+#   zcc +rc2014 -vn -DMATH16 -D__MATH_MATH16 -fp-mode=ieee … -lmath16 -lmath32 -clib=new -subtype=basic
 make test_mbf32_8085.bin
 make test_mbf32_8080.bin
 make test_mbf32_gbz80.bin
+make all   # full matrix: genmath/bbc/cpc/mbf32*/am9511*/math48/math32*/math16*/fix16
 # each rule builds and runs ticks with the matching -mCPU
 ```
 
 Expect `N run, N passed, 0 failed` plus a suite tick count. Use after **any**
-change to integer long helpers or float cores.
+change to integer long helpers or float cores. After `fsdiv` / `f16_div` edits:
+math32 **and** math16 suites on the CPUs that ship the object. After **newlib
+math.h** / `__MATH_MATH32` remaps: always run **`test_math32_rc2014_CODE.bin`**
+(and a newlib math16 link if half API changed).
 
 ### Small probes
 
@@ -305,14 +321,101 @@ z88dk-ticks -m8085 bench.bin -x bench.map \
 
 | Flag / define | Role |
 |---------------|------|
-| `-DSTATIC -DTIMER -D__Z88DK` | Locals + TIMER labels (classic benches) |
+| `-DSTATIC -DTIMER -D__Z88DK` | Locals + TIMER labels (classic benches); **no** `-DPRINTF` |
+| `-DPRINTF` | Accuracy / print path only — **not** for published TIMER ticks |
 | `--math32` / `--math-mbf32` | Float library (`@{ZCC_LIBCPU}` picks `math32_8085` with `-clib=8085`) |
+| `--math16` | Half float TIMER; use **`z88dk-classic/*.c`** (parent sources lack `_Float16` / `DT=1e-1`) |
+| 8085 math16 | TIMER: `--math16` and, when the readme says so, **`-lmath32_8085` only** (helper side-link). That is **not** `--math32` |
 | Size | “bytes less page zero” ≈ **binary size** of the TIMER build (`.bin`) |
-| Parallel host work | Fan out independent `zcc`+`ticks` jobs (≈ `nproc` cores); do not share output dirs |
+| Parallel host work | Fan out **ticks** and **builds** only with **separate workdirs + per-job `TMPDIR`**; never parallel bare `zcc` in one cwd |
 
 Parent `readme.txt` holds **CLASSIC Z80 / 8085 SUMMARY** tables; full RESULT
 blocks are often duplicated in parent + `z88dk-classic/`. Math32 comparison
 tables also live in `libsrc/math/float/math32/readme.md`.
+
+**80cc Z80** TIMER lines use `-compiler=80cc -fframe-pointer`.
+Detail: **`compiler-80cc`**. **Vanilla SDCC** (`/usr/local/bin/sdcc`, `*/sdcc/`
+readmes, tag `#16608`): **`methodology-sdcc-vanilla`**. Do not mix those rows
+with zsdcc `#16639`.
+
+### TIMER vs PRINTF (math16 / math32)
+
+| Purpose | Defines | Maths flags |
+|---------|---------|-------------|
+| **Speed (publish ticks)** | `-DSTATIC -DTIMER`, **no** `PRINTF` | Exactly the TIMER recipe in the readme |
+| **Accuracy** | `-DPRINTF` (often without TIMER) | May need a **full main** float lib for `printf`/`fprintf` (e.g. `--math32` with or without `--math16`) |
+
+**Never** combine **`--math16 --math32`** on a math16 **TIMER** line to “fix” a link error. That selects IEEE32 mode, pulls `fsdiv`, and can put **~65%+** of spectral cycles in math32 while still labelling the row math16 (invalid size and ticks).
+
+**sccz80 bare `1.0` under `__MATH_MATH16`:** an untyped `1.0` is still **double/f48** (`ddiv` / `dswap` / `l_f48_ftof16`). That fails with only `--math16` and is **not** a PRINTF issue. Fix in bench C for pure half TIMER, e.g.:
+
+```c
+return (DOUBLE)1.0 / (DOUBLE)((i+j)*(i+j+1)/2+i+1);
+```
+
+(or an equivalent half literal). Then prove purity on the map:
+
+```bash
+rg '__code_fp_math32_size|__code_fp_math16_size|fsdiv|divf16' prog.map
+# pure math16 TIMER: __code_fp_math32_size = $0000; hotspots in asm_f16_div / divf16
+```
+
+`-lmath32_8085` on an 8085 math16 TIMER recipe is only a **library side-link** for helpers; map may still show **zero** `code_fp_math32` if nothing from that product is referenced.
+
+### Full math16/math32 matrix remeasure (scripts)
+
+Agent tooling lives under **`.agents/scripts/`** (documented by this skill):
+
+| Script | Role |
+|--------|------|
+| **`.agents/scripts/run_math_benches.sh`** | 4-worker TIMER matrix: build + `z88dk-ticks` → `results.tsv` |
+| **`.agents/scripts/apply_math_bench_results.py`** | Apply TSV into parent/child `readme.txt` (size + ticks + date only) |
+
+When revising published **math16 / math32** numbers across sccz80 / 80cc / zsdcc
+and classic / newlib:
+
+1. Force-rebuild and install float products first:
+   `make -C libsrc/math/float/math32 && make -C libsrc/math/float/math16`
+   then `make -C libsrc install` (or copy `math32*.lib` / `math16*.lib` into
+   `lib/clibs/`).
+2. Run the matrix (edit `ROOT` / `WORK` / `PATH` at top of the shell script if
+   needed, or copy under `/tmp/…`):
+
+   ```bash
+   bash .agents/scripts/run_math_benches.sh
+   # → $WORK/results.tsv  (id bench clib compiler cpu math size ticks status wall_s)
+   ```
+
+   Each job: private directory + `export TMPDIR=$job/tmp` (zcc temp races
+   otherwise cause flaky `undefined symbol: dmul` / f48 link errors).
+   Copy **newlib** `zpragma.inc` only for **new** jobs — not into classic workdirs.
+3. Classic: `+test` TIMER recipes from `z88dk-classic/readme.txt`
+   (`-o name.bin -m -lndos`). Newlib: `+z80 -startup=0 … -create-app` with
+   that bench’s `zpragma.inc` when present. Math16 TIMER jobs must use
+   **`--math16` only** (plus documented `-lmath32_8085` on 8085), never
+   `--math16 --math32`.
+4. Before publish: for every math16 row, confirm map
+   `__code_fp_math32_size = $0000` (or no `fsdiv` / `cm32_*` in hotspots).
+   Discard polluted spectral math16 rows; remeasure pure after `eval_A` cast.
+5. Apply numbers into tree readmes:
+
+   ```bash
+   python3 .agents/scripts/apply_math_bench_results.py \
+     --results /tmp/z88dk-bench-YYYYMMDD/results.tsv \
+     --date 'August 9, 2026' \
+     --date-summary 'Aug 9, 2026'
+   # optional: --dry-run   --list
+   ```
+
+   Updates **parent SUMMARY** tick lines and matching **RESULT** blocks in
+   parent + `z88dk-classic/` / `z88dk-new/` — **size + ticks + date only**
+   (no new prose unless a new exception). Do **not** skip 80cc math32
+   n-body or whetstone: TIMER completes; n-body second energy is valid as
+   IEEE bits if you do not want to wait on printf. +test `%f` works
+   when `z88dk-ticks` gets `-counter` above the run (default cap is 1e8).
+6. Wiki drop-ins: regenerate full paste files for `Benchmarks.md` and
+   `Classic--Maths-Libraries.md` (local drafts may be `wiki-Benchmarks.md` /
+   `wiki-Classic--Maths-Libraries.md`; not product commits).
 
 When publishing a library opt:
 
@@ -326,19 +429,31 @@ When publishing a library opt:
 
 Long-running benches (e.g. spectral-norm, pi) need large counters and patience;
 100% CPU with rising runtime is normal, not a hang, if PC is advancing.
+Spectral-norm math32 is ~8–20e9 cycles (~5–15 min wall per job on a typical
+host); plan the 4-thread matrix for well over an hour.
 
-### Float energy / accuracy when `printf %f` is broken
+### Float energy / accuracy on `+test`
 
-Classic 8085 `+test` can fail to link full float printf (`__printf_handle_far_s`
-and similar). For n-body-style energies, dump IEEE bits with `putchar` hex
-(union `float` ↔ `unsigned long`), then convert on the host:
+Classic `printf %f` on `+test` **works** (math32 `ftoa` included). Two
+separate traps have been mistaken for a dead `%f`:
+
+1. **`z88dk-ticks` default `-counter` is 1e8.** n-body n=100 is ~81M
+   (both energies print). n≥~125 is over the cap: first `%.9f` prints,
+   then ticks stops and prints `10000000x`. That number is the T-state
+   cap, not `ftoa`. Fix: `-counter 999999999999`. Official PRINTF
+   verify remains `+zx` / `+cpm` (no 1e8 cap).
+2. Classic 8085 `+test` can fail to **link** full float printf
+   (`__printf_handle_far_s` and similar) if `CLIB_OPT_PRINTF` is too
+   narrow. The benches set `0xffffffff` for that reason.
+
+TIMER builds have no print path — do not invent decimal energy from
+them. IEEE bits via `putchar` hex (union `float` ↔ `unsigned long`)
+are still the fast oracle:
 
 ```python
 import struct
 struct.unpack('>f', bytes.fromhex('be2d220a'))[0]  # → −0.16907516…
 ```
-
-Do not invent decimal energy from TIMER-only builds (no print path).
 
 ### Wiki pages (Benchmarks, Classic Maths Libraries)
 
@@ -379,6 +494,24 @@ tree; they are **not** part of the product PR.
 | “Long div opt made fannkuch 5% worse” | Map: **no** `l_long_div_*`; A/B binaries **identical**; hotspots: app + `l_div` (16-bit) + `l_lt` |
 | “Fasta long-div win” | Map has `l_long_div_0`; A/B ticks 216M → 205M; hotspots concentrated in div_loop / batch |
 | 8080 batch div wrong after port | `ld hl,sp+*` is `add hl,sp` → **clobbers C**; save/restore Carry around SP math (8085 `ld de,sp+*` does not) |
+| Restoring `fsdiv` vs NR `fsinv`×mul | Swap only div `.asm`; rebuild z80+8085 (+z80n/z180 if measuring HW mul); suite 16/16; TIMER: **whetstone** shows ~1.4×; **n-body / spectral** often **0%** (mul/sqrt-hot) |
+| “`1.0f/x` same speed as `inv(x)`” | sccz80 rewrites literal `1.0f/x` → `inv`; map shows only `fsinv`. Force runtime numerator (`static float one=1`) or `a/b` to hit `fsdiv` |
+| z80n/z180 inv faster, div unchanged | HW mul is on NR inv / mul cores; restoring div does not use `mulu_32h_*` — z80n div TIMER ≡ plain z80 |
+| math16 spectral “worse” after `--math16 --math32` link fix | Map: large `__code_fp_math32_size`; hotspots **~65% in `fsdiv`**, not `f16_div`. Discard row; use pure `--math16` + casted `1.0` |
+| TIMER math16 link: `ddiv` / `l_f48_ftof16` | Bare `1.0` under `__MATH_MATH16` → f48 path; cast to `DOUBLE` / half literal. Not fixed by adding `--math32` |
+| Classic ~11 vs newlib ~15 KWIPS Whetstone math32 | **Not** opt flags (`-O2` vs `-O3i` ≈ 0%). Hotspots: identical app C cycles; gap in math32 **wide path**. Root cause (#3061): sccz80 newlib called plain `sin`/`sqrt` (stack bridge) with DEHL. Fix: newlib `proto/math.h` `*_fastcall` remaps under `__MATH_MATH32`. After fix TIMER ≈ classic (~11 KWIPS / ~362M ticks). Map must show `sin_fastcall` / `sqrt_fastcall`; zero hits on `m32_fsinvsqrt` ⇒ still broken |
+| “Library symbol order picks a slower routine” | Same `math32.lib` for both products; module set differs only by `*_fastcall` vs plain wrappers. Prove with map + static call sites, not archive order alone |
+| Newlib n-body much faster than classic math32 | Check for **source** cheat (`invsqrt` under `__MATH_MATH32` only on newlib). Align to `1.0/sqrt` then remeasure; after #3061 header fix sccz80 new ≈ classic (~791M ticks) |
+| sccz80 newlib “correct” TIMER but wrong KWIPS | Remeasure **after** header regen (`make -C include/_DEVELOPMENT common/math.h`). Stale numbers from pre-#3061 trees are invalid for product claims |
+| `+test` n-body second `%.9f` prints `10000000x` | Not `ftoa`. Default ticks `-counter` is 1e8; n=200 is ~161M. First energy prints, then the cap. Same on sccz80 and 80cc. Fix: `-counter 999999999999` |
+
+### Float library A/B (math32 / math16)
+
+1. Snapshot **NEW** sources; pull **OLD** from a known commit if needed.
+2. Force-rebuild products that list the object (`math32` + `math32_8085`; z80n/z180 if shared `asm/z80/f32_fsdiv.asm` or mul helpers).
+3. Install to `lib/clibs/`; **delete** `.bin`/`.map`; same `zcc +test` line both sides.
+4. Prove link: map has `m32_fsdiv` / `div_body` (restoring) vs trampoline + `m32_fsinv` (NR).
+5. Report non-goals (benches without `/` call sites) so “0%” is not a failed experiment.
 
 ---
 
@@ -414,192 +547,11 @@ When finishing an optimisation or regression investigation, state:
 
 ---
 
-## 9. `z88dk-copt` — peephole rules and codegen hygiene
+## 9. copt (pointer)
 
-`z88dk-copt` is z88dk’s **text peephole optimiser**: it reads assembly on
-**stdin**, applies pattern → replacement rules from named files, and writes
-improved assembly on **stdout**. `zcc` runs it on **compiler-generated** output
-(sccz80 `.opt` / similar), not on hand-written library sources.
+Hand-written `libsrc/**` is **not** copt'd. Full peephole rules and finalisation checklist: **`tool-copt`**.
 
-Source and man page: `src/copt/copt.c`, `src/copt/copt.1`. Rule files live under
-`lib/z80rules.*` (plus target/CPU/user extras).
-
-### What agents must remember when writing library asm
-
-| Fact | Consequence |
-|------|-------------|
-| **Library `.asm` under `libsrc/` is assembled directly** | copt **never** runs on it in the normal build |
-| **Dead moves stay dead** | Write clean sequences yourself (`ld b,a` then `ld a,b` is never cleaned up later) |
-| **Whitespace is not a style war** | Match the **target file**: tabs vs spaces, column layout, comment style. Most classic `libsrc/l/sccz80/**` and math32 cores use **spaces** (often four-space indent). copt rule files and sccz80 dumps use **tabs** — that is only for matching those pipelines |
-| **copt matches whole lines (mostly literal)** | Trailing comments, different spacing, or a space-indented library line will not match a tab rule. That is irrelevant when editing library sources in their native style |
-
-Do **not** reformat a library file to “look like copt input”. Follow neighbours
-in the same file. Do **do** apply the *semantic* lessons of the rules (remove
-redundancies copt would drop on compiler output).
-
-### How a rule is written
-
-```text
-	<pattern line 1>
-	<pattern line 2>
-	...
-=
-	<replacement line 1>
-	...
-
-```
-
-- Blank line ends the rule. Lines starting with `;;` (column 0) are comments in
-  the rule file.
-- **`%1`…`%9`** — wildcards; same index must bind the same text within one fire.
-- **`%%`** — literal `%`.
-- **`%eval(...)`**, **`%check min <= %n <= max`**, **`%is` / `%not`**,
-  **`%notSame`**, **`%cpu` / `%notcpu`** — preconditions (evaluated after binds).
-- **`%title ...`** — label for debug; does not match source.
-- **`%L` / `%M` / `%N`** in replacements — unique labels.
-- **`%activate` / `%once`** — dynamic rule activation (advanced; see man page).
-
-Matching walks the input **in reverse** along each candidate window so shorter
-cascades can fire after a replacement without backing up far. Multiple passes
-run until quiet (capped).
-
-### CLI (manual experiments)
-
-```bash
-# Rules as argv; source on stdin. -m sets %cpu checks; -D prints firings.
-z88dk-copt -m8085 [-D] lib/z80rules.9 lib/z80rules.2 lib/z80rules.1 \
-  lib/z80rules.0 [lib/z80rules.8] < input.asm > output.asm
-```
-
-Expect **no change** if you feed space-indented, commented library asm into
-rules written for sccz80 tab style — that is expected, not a broken tool.
-
-### Which rule files `zcc` applies (classic sccz80 path)
-
-Configured via `COPTEXE` / `COPTRULES*` (defaults in `src/zcc/zcc.c`):
-
-| Peephole `-O` | Rule set (order matters) |
-|--------------:|--------------------------|
-| 0 | `z80rules.9` |
-| 1 | `.9` + `.1` |
-| 2 (common default in target `OPTIONS`) | `.9` + `.2` + `.1` |
-| 3+ | `.9` + `.2` + `.1` + `.0` |
-
-Also, when present:
-
-| Config | Role |
-|--------|------|
-| `COPTRULESINLINE` → `z80rules.8` | sccz80 **inline ints** path only (`c_sccz80_inline_ints`); otherwise not loaded |
-| `COPTRULESTARGET` | Target-specific (e.g. z88) |
-| CPU map rules | CPU-specific if the file exists |
-| `-custom-copt-rules=` | User file |
-
-Other compilers have their own sets (`lib/sdcc/…`, `80cc_rules.1`,
-`clang_rules.1`, …). This section is about the classic **z80rules.*** family.
-
-Rough file roles:
-
-| File | Role |
-|------|------|
-| `z80rules.9` | Intrinsics / RST-style substitutions (always first among the numbered set) |
-| `z80rules.2` | Aggressive / higher-O peepholes (includes dead re-load into same dest) |
-| `z80rules.1` | Large main sccz80 peephole set |
-| `z80rules.0` | Extra / lower-priority patterns (linked as `COPTRULES3`) |
-| `z80rules.8` | Inline common sccz80 helpers **and** a few general cleanups |
-| `z80rules.frame` | Tiny frame-related snippet (not the main pipeline by itself) |
-
-### Rules that matter for register hygiene (codegen lessons)
-
-These teach what **not** to emit in hand-written cores either.
-
-**Copy-back is a no-op** (`z80rules.8` — only if that file is loaded):
-
-```asm
-	ld	%1,%2
-	ld	%2,%1
-=
-	ld	%1,%2
-```
-
-Example: `ld b,a` / `ld a,b` → keep only `ld b,a`. On 8085/8080/gbz80 long-div
-prologue this is exactly the redundant high-byte re-load after building BC.
-
-**Register-specific variant** already in `z80rules.0` (always available at `-O3+`):
-
-```asm
-	ld	l,a
-	ld	a,l
-=
-	ld	l,a
-```
-
-Only **L↔A**, not a general B/C/D/E/H rule — so do not assume every copy-back is
-stripped unless `.8` is active or you remove it by hand.
-
-**Dead second load into the same destination** (`z80rules.2`):
-
-```asm
-	ld	%1,%2
-	ld	%1,%3
-=
-	ld	%1,%3
-```
-
-**Implication for new code:** after `ld r,a` (or any `ld dst,src`), if the next
-instruction only reloads `src` from `dst` so you can `or` / test the original,
-**drop the reload** — `A` (or the source) still holds the value. Same for any
-symmetric copy-back. copt may clean that on sccz80 output; **library authors
-must**.
-
-### Using copt knowledge while generating or reviewing code
-
-1. **Hand-written `libsrc/**`**: write the optimised form yourself; match file
-   whitespace/comments; never rely on a later copt pass.
-2. **Compiler dumps / `.opt` / `.asm` from `zcc`**: expect copt to have already
-   run; remaining slop is either not covered by rules, blocked by comments/labels
-   between instructions, or needs a new rule / better frontend codegen.
-3. **Proposing new copt rules**: put them in the right file for the intended `-O`
-   level; use tab + sccz80 operand style so they match compiler output; add
-   `%cpu` / `%notcpu` when a pattern is unsafe on 8080/8085/gbz80.
-4. **Experimentation**: normalise a snippet to tab style **only in a temp file**
-   if you want to see whether existing rules fire; do not commit that reformat
-   into library sources that use spaces.
-5. **A/B of “copt would fix this”**: if a library bug is a pure redundancy the
-   rules already express, the fix is a one-line delete in the library — same
-   binary effect as copt on compiler text, without depending on rule load order.
-
-### Before finalising hand-coded library work (required)
-
-Hand-written **math16 / math32 / sccz80 runtime** asm is **not** passed through
-`z88dk-copt`. Before calling an edit done (and before staging / TIMER publish):
-
-1. **Scan** the touched hand sources for **copt-equivalent** idioms (semantic
-   matches to `lib/z80rules.{0,1,2,8}`, not mechanical tab reformatting).
-2. **Apply** safe cleanups in the library file itself. Typical wins:
-
-| Smell | Prefer |
-|-------|--------|
-| `ld r,a` then `ld a,r` (copy-back) | Drop second insn (`z80rules.8` / `.0`) |
-| `add a,a` / `rla` then `ld e,a` then **`ld a,e`** before next shift/test | Drop `ld a,e` — **A** still holds the value |
-| `ld b,a` then `ld a,b` when A unchanged | Drop `ld a,b` |
-| `push de` / `pop hl` (DE→HL, DE dead) | `ex de,hl` (or `ld h,d` / `ld l,e` if DE must live) |
-| `push hl` / `pop bc` (HL→BC) | synthetic **`ld bc,hl`** |
-| Triple unstack ending `push hl` / `pop bc` / `pop de` / `pop hl` | `ld bc,hl` then two pops |
-| `ld h,0` / `ld l,0` (and DE/BC pairs) | `ld hl,0` / `ld de,0` / `ld bc,0` |
-| Dead second `ld` into same dest | Keep only the last load (`z80rules.2`) |
-
-3. **Do not** blindly apply `ld a,0` → `xor a`: `ld` **preserves** flags; `xor a`
-   **clears C**. Unsafe before `sbc` / `rla` / `rra` that need the prior carry
-   (common in float sign / multiprecision negate paths).
-4. **Skip** intentional stack peeks (`pop de` / `push de`) and real callee
-   argument pushes — those are not dead transfers.
-5. **Gate**: suite / probe on the CPUs that link the objects (e.g.
-   `test_math32_8085.bin` after 8085 math32 edits).
-
-Ignore sccz80/sdcc **generated** dumps under `c/asm/` for this scan; fix or
-regenerate those only via the C sources / rebuild pipeline.
-
-### Related pitfalls (copt vs library)
+## Related pitfalls (copt vs library)
 
 | Pitfall | Note |
 |---------|------|
@@ -614,9 +566,9 @@ regenerate those only via the C sources / rebuild pipeline.
 
 ## Related
 
-- Opcode map / flags: **opcode-reference**
-- 8085 coding rules / stack / synthetics: **extended-usage**
-- Target CRT / serial / disk / `target_io` architecture: **[z88dk](../z88dk/SKILL.md)**
+- Opcode map / flags: **`cpu-8085`**
+- 8085 coding rules / stack / synthetics: **`cpu-8085`**
+- Target CRT / serial / disk / `target_io` architecture: **`library-newlib`** / **`library-classic`**
 - Upstream z88dk: https://github.com/z88dk/z88dk  
 - Hotspot discussion (ticks debugger): z88dk issue tooling notes around
   `z88dk-ticks` interactive `hotspot on` usage
@@ -624,3 +576,9 @@ regenerate those only via the C sources / rebuild pipeline.
 - Math suite: `test/suites/math/` · I/O suite: `test/suites/target_io/`
 - copt rules: `lib/z80rules.{0,1,2,8,9,frame}` · driver wiring: `src/zcc/zcc.c`
   (`apply_copt_rules`, `COPTRULES*`)
+
+
+## Related tool skills
+
+- `tool-ticks`, `tool-z80nm`, `tool-dis`, `tool-copt`, `tool-zcc`
+- `compiler-80cc`, `methodology-sdcc-vanilla`

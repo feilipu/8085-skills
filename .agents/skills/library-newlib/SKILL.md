@@ -1,129 +1,13 @@
 ---
-name: z88dk
+name: library-newlib
 description: >
-  z88dk newlib vs classic architecture for targets, CRT m4 driver instantiation,
-  serial/character FILE* wiring, hybrid 8085 consoles, cooked line input
-  (getline vs fgets_cons), static stdio heap sizing, disk fcntl (asm_target_open,
-  open_max, FCB vs FatFs), mixed multi-CPU trees, target_io / ticks verification,
-  library source layout (one major function per file under libsrc), and math32
-  multi-CPU float library layout/rounding policy. Use when migrating targets,
-  adding serial or disk drivers, writing or reorganising library asm/C under
-  libsrc (math, sccz80, target), debugging fopen/open or console-after-fopen,
-  dual-stack file I/O, CP/M stdio devices, dual-CPU firmware shells, or reviewing
-  CRT/config lists. Complements z88dk-tooling (measure) and extended-usage
-  (8085 codegen).
+  z88dk newlib architecture: CRT m4 FILE* instantiation, character_00 vs
+  console_01, static stdio heap sizing, asm_target_open disk path, dual-stack
+  FCB vs FatFs, open_max/fopen_max. Use when migrating targets, adding serial
+  or disk drivers, or debugging fopen/open on -clib=new.
 ---
 
-# z88dk target I/O architecture (newlib + classic)
-
-General lessons from migrating hardware targets and enabling newlib CP/M file
-I/O. **Measurement** stays in **[z88dk-tooling](../z88dk-tooling/SKILL.md)**.
-**8085 codegen** stays in **extended-usage** / **opcode-reference**.
-
-Assume a built tree with `bin/` on `PATH` and `ZCCCFG` → `lib/config`.
-
----
-
-## 0. Library source layout — one major function per file
-
-House style across z88dk **`libsrc/`** (classic and newlib): **one major function
-(or one logical operation) per source file**. Do not invent a different layout
-when adding or splitting library code.
-
-### What counts as “one major function”
-
-| In one file | Separate files |
-|-------------|----------------|
-| The operation’s public entry (or entries) | Unrelated operations (e.g. mul vs add) |
-| **Callee** and non-callee / sccz80–sdcc glue for that op when they live with the core | Different ops “to save files” |
-| f16 + f24 (or similar) variants of the **same** op | Pack/expand family may share a conversion file if that is the existing pattern for that library |
-| Helpers that belong only to that op (local or `PUBLIC` if other modules call them) | Helpers that are really a second feature → own file |
-
-Examples (math16-style, but the rule is general):
-
-- `asm_f16_mul.asm` — half mul callee, f24 mul, integer mulu helper  
-- `asm_f16_add.asm` — add/sub callee + f24 add  
-- `asm_f16_compare.asm` — compare + compare_callee  
-
-### Agent rules
-
-1. **Match neighbours** in the same directory: filename ≈ symbol / operation name.
-2. **Do not** merge unrelated ops into one `.asm`/`.c` to share a few lines.
-3. **Do not** split a single op across files just to isolate a 10-line helper unless the tree already does that.
-4. CPU-specific copies (`asm/z80/`, `asm/8085/`, `l/sccz80/7-8085/`, …) keep the **same one-op-per-file map**; implementations may differ by ISA, not by inventing a parallel file taxonomy.
-5. List files (`.lst`) and products reference modules by path — one op per file keeps nm/map/hotspot attribution sane.
-
-This is an **implicit z88dk library requirement**, not a math16-only note. Apply it to sccz80 runtime, float cores, target drivers, and new work under `libsrc/`.
-
----
-
-## 0b. Math32 multi-CPU float library (layout + policy)
-
-Home: `libsrc/math/float/math32/`. Products: `math32.lib` (plain z80) plus
-`math32_{z80n,z180,r2ka,kc160,8085,…}.lib`. Link via **`--math32`**
-(`-lmath32@{ZCC_LIBCPU}` — 8085 selects `math32_8085` automatically; no separate
-`--math32_8085` flag).
-
-### Layout
-
-| Tree | Role |
-|------|------|
-| `asm/z80/` | Z80-family cores; shared by z80n/z180/r2ka/… when the lst points here |
-| `asm/8085/` | Stack-only 8085 cores (no EXX / IX / IY); extended opcodes + synthetics |
-| `c/asm/`, `c/8085/` | Higher functions (C → precompiled asm); 8085 higher via sccz80 only |
-| `newlibfiles_*.lst` | Which modules land in each product |
-
-**CPU-specific** = same *operation* name, different ISA file (same one-op-per-file
-map as §0). Do not invent a second taxonomy for 8085.
-
-### Rounding policy (do not mix casually)
-
-| Class | Policy (current math32) |
-|-------|-------------------------|
-| **mul / sqr / div / poly / sqrt pack** | **IEEE RNE** on residual below the kept mantissa |
-| **add / sub** | **Digi jam-sticky**: lost align/overflow bits → OR **1** into mant LSB; pack has no RNE residual |
-
-Long add chains (e.g. n-body energy) are sensitive to add rounding: jam keeps
-second-energy error ~1e−6 class; full RNE-on-add has been measured to worsen E1
-(~5e−5 class) at higher cost. Prefer matching z80 and 8085 **policy** even when
-engines are not bit-identical.
-
-### Micro-opt patterns that port
-
-| Pattern | Idea | Notes |
-|---------|------|--------|
-| Implicit-1 CF | `ld a,255` / `add a,h` → CF=(exp≠0) instead of `or a` / `jr Z` / `scf` | ~8–9 T per unpack; works on Z80 and 8085 |
-| Z80 non-callee stack load | 3×`pop` + 3×`push` vs `hl=sp+2` walk | ~8 T; 8085 stack-slot paths already different |
-| Hot tiny helpers | Inline 2–4 insn jam sticky at call sites | Saves call/ret; size often net-neutral or smaller |
-| Unused stack pad | Drop frame slots only after proving no SP offsets still use them | Remeasure; fix every `sp+N` comment |
-
-Callee linkage: float helpers that pop a return address + stack args must be
-**`call`’d**, not bare **`jp`** (floor/ceil class bugs). Keep that rule when
-editing pack/add glue.
-
-**Measure / rebuild / wiki:** **[z88dk-tooling](../z88dk-tooling/SKILL.md)**
-(§ math32 rebuild, benches, wiki bold rules). Docs of record:
-`libsrc/math/float/math32/readme.md`, `support/benchmarks/*/readme.txt`.
-
----
-
-## 1. Two library worlds (do not blur)
-
-| World | Home | CPUs | Typical product |
-|-------|------|------|-----------------|
-| **Classic** | `libsrc/target/<name>/` (historic fcntl/stdio/gfx) + `libsrc/classic/` | Z80, IXIY, Z180, **8080**, **8085**, gbz80, … | `*_clib.lib`, `cpm8085_clib.lib`, … |
-| **Newlib** | Was `libsrc/newlib/target/<name>/`; migrated → `libsrc/target/<name>/` beside classic | **Z80-class** (`-clib=new` / `sdcc_ix` / `sdcc_iy`) | `lib/clibs/{sccz80,sdcc_ix}/<target>.lib` |
-
-**Hard rules**
-
-1. Do **not** merge classic and newlib **stdio cores** or **fcntl `open` owners** in one link without a designed bridge.
-2. Prefer sharing **device / thin driver** layers, not cores.
-3. **CLIB** selects newlib; machine **SUBTYPE**s usually stay classic-owned (esp. CP/M’s 150+ machines).
-4. After a path move, put the target name in `MIGRATED_TARGETS` in `libsrc/newlib/Makefile` so builds use `../target/<name>`.
-
-**Mixed tree hazard:** when newlib Z80+ sources land under `libsrc/target/cpm/` next to classic multi-CPU code, isolation is **list ownership** (`*.lst`), never broad globs. Classic 8080/8085 images must never pull newlib objects (Z80-only opcodes / calling conventions).
-
----
+# Library — newlib
 
 ## 2. Serial / character FILE* instantiation (newlib)
 
@@ -420,13 +304,41 @@ CP/M outputs need **`.com`** for ticks CP/M mode; some newlib links produce `*_C
 
 ---
 
+## 7. Headers: edit **proto**, regenerate **common**
+
+Newlib public headers live under `include/_DEVELOPMENT/`:
+
+| Path | Role |
+|------|------|
+| **`proto/*.h`** | Source of truth (m4 macros: `__DPROTO`, `__D2PROTO`, …) |
+| **`common/*.h`** | Generated: `m4 proto/foo.h > common/foo.h` |
+
+```bash
+cd include/_DEVELOPMENT
+# one file:
+make common/math.h
+# or force:
+make -B common/math.h
+```
+
+Do **not** hand-edit `common/` for lasting changes — edit **proto** and regenerate.
+
+### Math32 sccz80 remaps (`math.h`, issue #3061)
+
+Under `#ifdef __MATH_MATH32` / `#ifdef __SCCZ80`, `proto/math.h` remaps unary
+API names to `*_fastcall` (same idea as classic `math/math_math32.h`). Required
+because `math32.lib` is built with `-D__CLASSIC` and plain `sin`/`sqrt`/… are
+**stack bridges**, while sccz80 treats the plain name as DEHL fastcall.
+
+Details and map proofs: **`library-math32`**. After header edits: suite
+`test_math32_rc2014_CODE.bin` + remeasure newlib TIMER rows that call higher
+math (Whetstone, n-body).
+
+---
+
 ## Related
 
-- Host measurement / ticks / maps / copt / benches / wiki paste: **[z88dk-tooling](../z88dk-tooling/SKILL.md)**
-- 8085 coding / stack rules: **[extended-usage](../extended-usage/SKILL.md)**
-- Opcode map: **[opcode-reference](../opcode-reference/SKILL.md)**
-- Upstream: https://github.com/z88dk/z88dk  
-- Math32 tree: `libsrc/math/float/math32/` (see `readme.md`)
-- Example dual-stack notes: `libsrc/_DEVELOPMENT/EXAMPLES/z80/stdio_target/readme.md`  
-- Suites: `test/suites/target_io/`, `test/suites/math/`
-- Wiki: https://github.com/z88dk/z88dk/wiki (Benchmarks, Classic--Maths-Libraries)
+- Classic: `library-classic`
+- Float products / calling: `library-math32`, `library-math16`
+- Measure I/O: `test/suites/target_io` (see `methodology-measure`)
+- Targets: `target-cpm`, `target-rc2014`
