@@ -23,7 +23,7 @@ Home: `libsrc/math/float/math32/`. Products: `math32.lib` (plain z80) plus
 | Tree | Role |
 |------|------|
 | `asm/z80/` | Z80-family cores; shared by z80n/z180/r2ka/… when the lst points here |
-| `asm/8085/` | Stack-only 8085 cores (no EXX / IX / IY); extended opcodes + synthetics |
+| `asm/8085/` | Stack-only 8085 cores (no EXX / IX / IY); extended opcodes + synthetics. After `rl de`, test exp with `inc d`/`dec d` — RDEL does not write Z |
 | `c/z80/`, `c/8085/` | Higher functions (C → precompiled asm); 8085 higher via sccz80 only |
 | `newlibfiles_*.lst` | Which modules land in each product |
 
