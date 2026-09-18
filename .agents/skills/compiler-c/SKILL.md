@@ -58,7 +58,8 @@ If the source typedefs 1/2/4-byte aliases (`BYTE`, `WORD`, `DWORD`,
 | `float` / `double` / `double_t` | maths mode | IEEE32 = 4, DEHL; MBF32 = 4; genmath is not IEEE64. If the source has `float` and no library is named, **ask** (TIMER work) or use IEEE32 for a toy |
 | `_Float16` | 2 | `library-math16` |
 
-Ingest C90 plus common source sugar: `//` comments, implicit-int `main()`,
+Ingest C90 plus common source sugar: `//` comments (emit as `;` — Comments),
+implicit-int `main()`,
 `for (T i = 0; …)` and mixed declarations (hoist to the enclosing block;
 do not treat as C99), `TIMER_*` macros as **labels** at those sites,
 `register` as a BC/DE hint only. `Assert` / `assertEqual` bind as ordinary
@@ -203,7 +204,7 @@ it was parked in BC, DE, or a stack slot.
 6. Do not park a 16-bit value in **AF**. `pop af` forces F bit 3 to 0
    (`$FFFF` → `$FFF7`); never use AF for a return address.
 
-Hot function: `; residency: i in BC; p in DE; x at sp+4`.
+Hot-function homes go in the function header **Uses** line (Comments).
 
 ## Frames — stack only
 
@@ -223,6 +224,7 @@ Prefer **`cpu-8085`** sequences:
 | Offset > 255 | `ld hl,nn` / `add hl,sp` | `*` on LDSI/LDHI is **unsigned 8-bit** |
 
 If DE is a live home, `push de` around the SP op and add 2 to the offset.
+Function headers (purpose, inputs with this map, outputs, registers): **Comments**.
 
 ```asm
 ; void f(int a, int b)   /* SMALLC: push a, then b; caller cleans */
@@ -230,6 +232,32 @@ If DE is a live home, `push de` around the SP op and add 2 to the offset.
 ; locals: push, or ld hl,-n / add hl,sp / ld sp,hl
 ; exit: restore SP; ret
 ```
+
+## Comments
+
+Carry the C into the listing. The `.asm` must still show intent.
+
+**C comments.** Every `/* … */` and `//` appears as `;` at the matching site. Do not drop them when hoisting mixed declarations or rewriting a shape. Keep the C wording. If that wording is too thin to identify the following instructions, **expand** the comment with the C the block implements (the statement, the named shape, or a one-line restatement of the function).
+
+**Function header (required).** Immediately before each `_name:` (and before `start` in a complete image), even when the C function has no comment:
+
+```asm
+; _foo — walk p for n bytes and return the count
+; C: int foo(int n, char *p)
+; Inputs:  n at [sp+4], p at [sp+2]; [sp+0]=ret; SMALLC, caller cleans
+; Outputs: HL = count
+; Uses:    DE = p; BC = n; A HL scratch
+```
+
+- **Purpose** — from the C comment on the function if present; otherwise what the function computes.
+- **C:** the C90 signature (hoisted types, not C99 `for`-init).
+- **Inputs:** each parameter: type, name, stack slot or incoming register (`__z88dk_fastcall` last scalar in HL / DEHL). Include the SMALLC map.
+- **Outputs:** ABI return home (`L` / `HL` / `DEHL` / void). Out-parameters: address + what is stored.
+- **Uses:** live homes (which C object in BC, DE, C, DEHL, which stack slots). A and HL as bus are scratch unless a home. If the body `call`s, **A F BC DE HL** die across that call.
+
+**Attached C on non-obvious blocks.** After a shape rewrite, one `;` line with the C that block implements (`while (p < end)`, `acc = (acc << 1) ^ K`, `y[i] = a*x[i] + y[i]`). Do not narrate every opcode.
+
+Zilog `;` only. Same-line or above the block. Do not invent commentary that is not the required header, a carried C comment, or an expansion of the C being implemented.
 
 ## C → 8085 primitives
 
@@ -560,12 +588,14 @@ flag side effects: **`cpu-8085`**.
 
 ## Workflow
 
-1. Read the C as C90. Note widths, signedness, `static`, attributes, float.
+1. Read the C as C90. Note widths, signedness, `static`, attributes, float,
+   and every comment.
 2. Name the shapes per function (tables above).
 3. Lay out objects: `static` keyword and file-scope → BSS/data; every
    automatic → stack. No extra BSS.
 4. Plan residency (word cursor DE, stride BC, byte acc C, one long DEHL).
-5. Lower with extended ops; spill across `call`.
+   Write the function header (Comments) from that plan.
+5. Lower with extended ops; spill across `call`. Carry and expand comments.
 6. Assemble `z88dk-z80asm -m8085 -l`. Rewrite helper calls on the hot path.
 7. If the source uses TIMER macros, emit `TIMER_START` / `TIMER_STOP` as
    **labels at those source points**, not around CRT.
