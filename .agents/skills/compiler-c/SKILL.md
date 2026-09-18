@@ -383,9 +383,8 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | UTF-8 / UTF-16 unit | `uc << 6 \| (tb & 0x3F)` | 32-bit shift-or; continuation test `tb & 0xC0` is `and 0xC0` / `cp 0x80` |
 | Allocated-bit in `size_t` | `x & (1<<(sizeof(size_t)*8-1))` | MSB of a 16-bit size is **H bit 7**. Test `ld a,h` / `or a` / `jp m` (or `rla` / `jp c`). **No** Z80 `bit 7,h` |
 | Overflow guard | `a > SIZE_MAX - b` | Unsigned 16-bit: `ld hl,MAX` / `sub hl,bc` / `jp c` then compare `a` |
-| CRC-8 bit-serial | `c^=*p++; (c&0x80)?(c<<1)^p:(c<<1)` ×8 | Acc in **A** (park in C across the pointer inc). `add a,a` / `jp nc` / `xor poly`. Pointer vs `end`: unsigned |
-| CRC-16 bit-serial | `crc^=(*p++)<<8` then MSB×8 | CRC in **HL**. XOR byte into H; eight× `add hl,hl` / `jp nc` / XOR poly `0x1021` into HL through A |
-| CRC-32 bit-serial | `(crc&1)?(crc>>1)^poly:(crc>>1)` ×8 | CRC in **DEHL**. XOR byte into L. Logical `>>1` (`or a` then `rra` D,E,H,L); if C (old bit 0) XOR `0xEDB88320`. Final `^ ~0UL` is `cpl` on D, E, H, L |
+| Bit-serial feedback, MSB out | `acc ^= *p++;` then 8× `(acc & msb) ? (acc<<1)^K : (acc<<1)` | 8-bit: acc in **A** (park in C across the pointer inc), `add a,a` / `jp nc` / `xor K`. 16-bit: acc in **HL**, XOR the byte into H, eight× `add hl,hl` / `jp nc` / XOR K through A. Pointer vs `end`: unsigned |
+| Bit-serial feedback, LSB out | `acc ^= *p++;` then 8× `(acc & 1) ? (acc>>1)^K : (acc>>1)` | Acc in **DEHL**. XOR the byte into L. Logical `>>1`; if C (old bit 0) XOR K into DEHL. Final `^ ~0UL` is `cpl` on D, E, H, L |
 | 16-bit rotate | `(a<<5)\|(a>>11)` | Park in BC; `add hl,hl`×5; OR with logical `B>>3` into L. General: `(v<<n)\|(v>>(16-n))` |
 | Boolean mix | `(b&c)\|((~b)&d)` | 16-bit: `cpl` both bytes of b; AND/OR per byte in A. Four live words: extras on the stack |
 | Q8.8 mul | `(u16*u16)>>8` → u16 | 16×16→**32** then **byte slide** `>>8` (L←H←E←D, D=0). Not `l_mult`, not `sra hl` |
@@ -456,7 +455,7 @@ the prototype says so.
 
 ### Sequences (use these, not Z80 `(ix+d)` / `exx`)
 
-**Unsigned long `>> 1`**, C ← old bit 0 (CRC-32 and any logical 32-bit shr):
+**Unsigned long `>> 1`**, C ← old bit 0:
 
 ```asm
     xor a              ; C = 0 (logical). `or a` on D also works if D is tested
@@ -474,7 +473,7 @@ the prototype says so.
     ld  l,a            ; C = old L bit 0
 ```
 
-**CRC-8 / CRC-16 one bit** (after the data XOR): `add a,a` or `add hl,hl`, then `jp nc` skip, else XOR the poly through A.
+**Shift then conditional XOR** (one bit, after mixing a data byte): `add a,a` or `add hl,hl`, then `jp nc` skip, else XOR a constant through A.
 
 **Q8.8** `(uint16)((uint32)a * b >> 8)`: 16×16→32 helper into DEHL, then byte slide L←H, H←E, E←D, D←0; result in HL.
 
@@ -507,9 +506,9 @@ If several fields, copy p to the stack once and form each `ld de,hl+off` from a 
 Correct C90 + this ABI first. Then **cycles**, then **bytes**. Timings and
 flag side effects: **`cpu-8085`**.
 
-1. **Name the shape**, then emit it (pointer walk, dual cursors, CRC bit,
-   Q8.8, bitfield RMW, combined divmod, variable shift). Index arithmetic
-   is the fallback.
+1. **Name the shape**, then emit it (pointer walk, dual cursors, bit-serial
+   shift-xor, Q8.8, bitfield RMW, combined divmod, variable shift). Index
+   arithmetic is the fallback.
 2. **Use the extra ops.** `ld de,sp+n` beats `ld hl,nn`/`add hl,sp` for
    unsigned 8-bit offsets. `sub hl,bc` is the 16-bit subtract, signed
    compare (K), and unsigned compare (C). `rl de` with `add hl,hl` is the
