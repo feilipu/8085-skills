@@ -26,12 +26,12 @@ Full 8085 opcode tables: `.agents/skills/cpu-8085/references/opcodes.md`
 | **library-classic** | Classic clib, hybrid 8085 consoles, isolation from newlib |
 | **library-newlib** | CRT m4, FILE*, `asm_target_open`, dual-stack FCB vs FatFs |
 | **library-math32** | IEEE float cores, 8085 vs z80 products, restoring div / NR inv |
-| **library-math16** | Half float |
-| **library-am9511** | Am9511A APU float |
+| **library-math16** | Half float (restoring div / NR inv; 8085 stack-only cores) |
+| **library-am9511** | Am9511A APU float (`--math-am9511` + `-clib=8085`; no `--math-am9511_8085`) |
 | **compiler-sccz80** | sccz80 codegen and `libsrc/l/sccz80/7-8085` runtime |
 | **compiler-zsdcc** | zsdcc / sdcc_ix / sdcc_iy (Z80-class; not the 8085 classic product) |
-| **compiler-80cc** | 80cc; no `-fframe-pointer` on 8085 |
-| **tool-zcc** | `zcc` front end |
+| **compiler-80cc** | 80cc; `-compiler=multi`; no `-fframe-pointer` on 8085 |
+| **tool-zcc** | `zcc` front end (`-compiler=multi`) |
 | **tool-ticks** | `z88dk-ticks` (CPU flag before the binary) |
 | **tool-z80asm** | assembler, synthetics, 8085 ok/err fixtures |
 | **tool-copt** | peephole rules; library asm is never copt’d |

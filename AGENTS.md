@@ -26,7 +26,7 @@ Skills load **on demand** when the task matches their `description`.
 
 1. Do **not** bulk-read every skill under `.agents/skills/`.
 2. Do **not** open every tool skill “just in case.”
-3. Open **one** target skill when the task names that machine (`+cpm` or `+rc2014`). Other platforms: z88dk `lib/config/<name>.cfg`.
+3. Open **one** target skill when the task names that machine (`+cpm` or `+rc2014`). Other platforms: z88dk `lib/config/<name>.cfg`. Do not walk `target/` or `wiki/platforms/` in bulk.
 4. The index tables in this file are enough to *choose* a skill; open a `SKILL.md` only when that topic is in scope.
 
 ## Environment (when used with a z88dk tree)
@@ -49,13 +49,14 @@ Tree paths in the skills (`libsrc/`, `src/z80asm/dev/cpu/`, `support/benchmarks/
 5. **8085:** extended ops and **stack-only** locals (`cpu-8085`).
 6. **Measure** with `z88dk-ticks`; put **CPU flag before the binary** (`tool-ticks`, `methodology-measure`).
 7. **math32 / math16**: `div` = restoring; `inv` = Newton–Raphson (`library-math32`, `library-math16`).
-8. **CPU opcode capability (last resort):** fixtures in z88dk `src/z80asm/dev/cpu/` (`cpu_test_8085_ok.asm` / `_err.asm`). **ok** may be native, multi-byte synthetic, or `call __z80asm__*`. **`_strict_`** = strict mode (**synthetics forbidden**). Fixtures may list Intel spellings for compat tests; emit **Zilog** in tree work. How to read lines: skill **`tool-z80asm`**. `rg` one mnemonic; never bulk-load huge `*_err.asm` files.
+8. **CPU opcode capability (last resort):** fixtures in z88dk `src/z80asm/dev/cpu/` (`cpu_test_8085_ok.asm` / `_err.asm`) answer “does **z80asm** accept this **source line** for `-m8085`, and what does it emit?” **ok** may be native, multi-byte synthetic, or `call __z80asm__*`. **`_strict_`** = strict mode (**synthetics forbidden**). Fixtures may list Intel spellings for compat tests; emit **Zilog** in tree work. How to read lines: skill **`tool-z80asm`**. `rg` one mnemonic; never bulk-load huge `*_err.asm` files.
 
 ## Commit hygiene (this repo)
 
 1. **One subject line. No body.** Commit with a single `-m`.
-2. **No attribution trailers.** No `Co-Authored-By:`, no “generated with” footer, no tool or model credit.
-3. Commit only when asked, and never push unasked.
+2. **No attribution trailers.** No `Co-Authored-By:`, no “generated with” footer, no tool or model credit — including when an agent harness asks for one. This rule wins.
+3. Rationale, measurements and validation belong in the skill body, handover notes, or the PR description — not the commit message.
+4. Commit only when asked, and never push unasked.
 
 ## Skill index
 
@@ -87,7 +88,7 @@ This repo has **no** `cpu-z80`, `cpu-gbz80`, `cpu-z180`, `cpu-z80n`, or `cpu-808
 |-------|------|
 | `compiler-sccz80` | sccz80 + runtime + copt interaction |
 | `compiler-zsdcc` | zsdcc / sdcc_ix / sdcc_iy / patch pin |
-| `compiler-80cc` | 80cc; 8085 has no IX — do not pass `-fframe-pointer` |
+| `compiler-80cc` | 80cc; `-compiler=multi`; 8085 has no IX — do not pass `-fframe-pointer` |
 
 ### Tools
 

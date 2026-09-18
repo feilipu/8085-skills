@@ -53,7 +53,7 @@ Agents must **realpath-dedupe** so following both `.grok` and `.claude` does not
 
 1. Built tools and sources in the **z88dk** checkout  
 2. In-tree READMEs / man pages next to those tools  
-3. **CPU opcode acceptance (assembler):** `src/z80asm/dev/cpu/cpu_test_8085_{ok,err}.asm` — last resort for “does z80asm accept this source line on `-m8085`?” Decode line format in skill **`tool-z80asm`**.  
+3. **CPU opcode acceptance (assembler):** `src/z80asm/dev/cpu/cpu_test_8085_{ok,err}.asm` — last resort for “does z80asm accept this source line on `-m8085`?” Decode line format in skill **`tool-z80asm`** (ok may be synthetic or `__z80asm__` helper, not only native ISA).  
 4. This repo’s skill bodies  
 5. External blogs — last resort  
 

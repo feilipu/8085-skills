@@ -18,7 +18,7 @@ Product docs of record: `libsrc/math/float/am9511/readme.md`.
 ## When to load this skill
 
 - Editing `asm/am32_*.asm`, `asm/z80/` or `asm/8085/` push/pop/classify, or `am32_fspecial.asm`
-- Wiring `--math-am9511` / `--am9511` / classic `--math-am9511_8085`
+- Wiring `--math-am9511` / `--am9511` / `--am9511h`
 - Debugging Inf/NaN, divide-by-zero, sqrt(neg), or wrong zero after APU ops
 - Comparing am9511 vs math32 TIMER (hardware APU vs software float)
 
@@ -26,9 +26,10 @@ Product docs of record: `libsrc/math/float/am9511/readme.md`.
 
 | Audience | Typical flags |
 |----------|----------------|
-| Classic z80 | `--math-am9511` or `--am9511` (alias); needs APU at the port map in config |
-| Classic 8085 | `--math-am9511_8085` (or target docs’ 8085 APU recipe) |
-| Newlib | `--am9511` / `-lam9511` with IEEE float mode as in readme |
+| Classic z80 | `--math-am9511` or `--am9511`; needs APU at the port map in config |
+| Classic 8085 | `--math-am9511` with `-clib=8085` (`-lam9511@{ZCC_LIBCPU}` → `am9511_8085`). There is no `--math-am9511_8085` alias |
+| Classic helper | `--am9511h` → `am9511h.lib` (same z80 sources, `-D__AM9511_HELPER_FUNC`) |
+| Newlib | `--am9511` / `-lam9511` with IEEE float mode as in readme (z80 clib only) |
 | Host emulator | `z88dk-ticks` includes an Am9511 model (`src/ticks/am9511.c`); ports **0x42/0x43** default |
 
 Products (via `libsrc/math/float/am9511/Makefile`): `am9511.lib`, `am9511_8085.lib`,
@@ -107,11 +108,15 @@ unless writing a multi-APU `am32_stack/*` clone.
 | `AM9511_IN_APU_DATA` | `in a,(__IO_APU_DATA)` | `call __am9511_in_data` |
 | `AM9511_OUT_APU_CONTROL` | `out (__IO_APU_STATUS),a` | `call __am9511_out_control` |
 | `AM9511_OUT_APU_DATA` | `out (__IO_APU_DATA),a` | `call __am9511_out_data` |
+| `AM9511_OUTI` | `outi` (needs `BC = data`) | `ld a,(hl)` / `inc hl` / `call __am9511_out_data` |
+| `AM9511_OUTC REG` | `out (c),REG` | `ld a,REG` / `call __am9511_out_data` |
+| `AM9511_INI REG` | `in REG,(c)` | `call __am9511_in_data` / `ld REG,a` |
 
-**z80** hot push/pop often use **`in r,(c)` / `outi` / `out (c),…`** with
-`BC = __IO_APU_DATA` for speed — those paths **bypass** the data macros (status
-still uses `AM9511_IN_APU_STATUS`). **8085** push/pop use the macros throughout.
-Helper product: `am9511_io.asm` + `-D__AM9511_HELPER_FUNC`.
+**z80** and **8085** push/pop both go through these macros. z80 keeps `outi` /
+`in r,(c)` on the normal path. Helper `am9511h.lib` is the same z80 sources with
+`-D__AM9511_HELPER_FUNC`. `am9511_io.asm` is an example stub only — **do not
+link it**. The app supplies `__am9511_in_status` / `_in_data` / `_out_control` /
+`_out_data`.
 
 ### Status register (must know for popf)
 
@@ -139,8 +144,8 @@ only BUSY is meaningful then. Continuous status reads can also clear the END
 flip-flop — prefer one wait-for-BUSY-clear then a **clean** status sample.
 
 **Do not edit generated `config_am9511_{private,public}.inc` / `.h` alone.**
-Source of truth: `libsrc/newlib/target/am9511/config/config_am9511a.m4`
-(included from `config.m4`; also pulled into **yaz180** `libsrc/target/yaz180/config.m4`).
+I/O macros: `config/config_target.m4`. Port / status defines: `config/config_am9511a.m4`
+(both included from `config.m4`; **yaz180** `libsrc/target/yaz180/config.m4` also pulls the am9511a m4).
 Regenerate via `libsrc/newlib` Makefile (`make am9511` config step) or:
 
 ```bash
@@ -219,12 +224,12 @@ Prove link: `z88dk-z80nm lib/clibs/am9511.lib | rg 'spec_|popf|fdiv|ftoa'`.
 
 ## Measure / suite
 
-- Suite: `test/suites/math` → `test_9511.bin`, `test_9511_8085.bin` with
+- Suite: `test/suites/math` → `test_am9511.bin`, `test_am9511_8085.bin` with
   **`-DMATH_SPECIALS`** (finite + Inf/NaN algebra via `am32_fspecial` + `popf`).
 - Do **not** add bare `-lm`/`-lgenmath` ahead of `--math-am9511`: genmath’s
   `sqrt` can win the link and bypass the APU path.
-- TIMER benches: classic recipes with `--math-am9511` / `--math-am9511_8085`; see
-  `am9511/readme.md` and **`methodology-measure`**.
+- TIMER benches: classic recipes with `--math-am9511` (add `-clib=8085` for the
+  8085 product); see `am9511/readme.md` and **`methodology-measure`**.
 - Ticks APU: `src/ticks/am9511.c` (approximate model — not bit-exact silicon).
   Status-bit accuracy is a separate work item if suite/hardware disagree.
 
