@@ -89,7 +89,7 @@ This repo has **no** `cpu-z80`, `cpu-gbz80`, `cpu-z180`, `cpu-z80n`, or `cpu-808
 | `compiler-sccz80` | sccz80 + runtime + copt interaction |
 | `compiler-zsdcc` | zsdcc / sdcc_ix / sdcc_iy / patch pin |
 | `compiler-80cc` | 80cc; `-compiler=multi`; 8085 has no IX — do not pass `-fframe-pointer` |
-| `compiler-c` | C90 → 8085 Zilog asm (agent is the compiler) |
+| `compiler-c85` | C90 → 8085 Zilog asm (agent is the compiler) |
 
 ### Tools
 
@@ -126,16 +126,6 @@ Any other target: z88dk `lib/config/<name>.cfg`. Host TIMER / suites: `+test` + 
 | `style-ste-writing` | Human prose only (not code) |
 | `methodology-measure` | A/B, hotspots, z88dk benches, suites, wiki numbers |
 | `methodology-sdcc-vanilla` | Stock `sdcc` benches (`*/sdcc/`), not zsdcc |
-
-## Old skill names (removed)
-
-| Old name | Now |
-|----------|-----|
-| `opcode-reference` | `cpu-8085` (opcode map + `references/opcodes.md`) |
-| `extended-usage` | `cpu-8085` (extended instruction usage) |
-| `z88dk` | `library-classic`, `library-newlib`, `library-math32`, `style-libsrc-layout` |
-| `z88dk-tooling` | `methodology-measure`, `tool-ticks`, `tool-copt`, and the other `tool-*` cards |
-| `ste-writing` | `style-ste-writing` |
 
 ## Human docs vs agent skills
 

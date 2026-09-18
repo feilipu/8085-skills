@@ -193,6 +193,7 @@ Pastraiser T-states (8085 clocks). Not 8080 (many documented ops differ by 1T).
 5. Never assume Z80 instruction timings or prefix opcodes exist on 8085. **`jr` / `jr cc` are allowed** in normal mode (synthetics on): z80asm emits `jp` / `jp cc` (3 bytes; cond `jp` is 10/7). Same source then assembles for Z80, where `jr` is native. **Strict** / `-no-synth` rejects `jr`. Do not expect a 2-byte relative branch (`18` is `rl de`).
 6. When optimizing, consult [references/opcodes.md](references/opcodes.md) for exact size/cycle/flag data.
 7. **Assembler support last resort:** fixtures `src/z80asm/dev/cpu/cpu_test_8085_{ok,err}.asm` (and `*_strict_*`). **ok** = z80asm accepts that source form (native, synthetic, or `call __z80asm__*`). **err** = rejected. **`_strict_`** = **synthetics forbidden**. Fixtures may include **Intel** spellings for external-compat testing; **z88dk always writes Zilog**. Full decode: **`tool-z80asm`**. `rg` only; do not bulk-read.
+8. **C90 shapes even without C.** When writing 8085 assembly directly, use the kernels in **`compiler-c85`** (pointer walk vs `a[i]`, word cursor DE, dual cursors, DSUB signed/unsigned, stack-only automatics). Those shapes produce better 8085 than a naïve statement-by-statement lowering.
 
 ## Quick lookup
 
@@ -524,13 +525,14 @@ Other common synthetics (not pair-copy): e.g. `ld a,(hl+)` (load + inc index).
 6. **`rl de`** for ×2, mul/div shifts, 32-bit with HL.
 7. **`sra hl`** for signed 16-bit >>; logical multi-byte >> via A.
 8. Fall back to 8080-portable sequences only when the binary must run without 8085 extended ops.
+9. Name the kernel from **`compiler-c85`** (even for hand-written asm) before emitting opcodes.
 
 ## Related
 
 - Full opcode grid: [references/opcodes.md](references/opcodes.md)
 - 8080-only jobs (no extras): `cpu-8080` in the z88dk tree — this pack does not ship it
 - How to read z80asm ok/err fixtures: `tool-z80asm` (`src/z80asm/dev/cpu/` in the z88dk tree)
-- C90 compiler guide (agent emits Zilog asm): `compiler-c`
+- C90 shapes for better 8085 asm (hand-written or from C): `compiler-c85`
 - Measurement / A/B: `methodology-measure`
 - copt vs library asm: `tool-copt`
 - Design notes: https://feilipu.me/2021/09/27/8085-software/

@@ -31,7 +31,7 @@ Full 8085 opcode tables: `.agents/skills/cpu-8085/references/opcodes.md`
 | **compiler-sccz80** | sccz80 codegen and `libsrc/l/sccz80/7-8085` runtime |
 | **compiler-zsdcc** | zsdcc / sdcc_ix / sdcc_iy (Z80-class; not the 8085 classic product) |
 | **compiler-80cc** | 80cc; `-compiler=multi`; no `-fframe-pointer` on 8085 |
-| **compiler-c** | C90 compiler guide for 8085 (`/compiler-c`) |
+| **compiler-c85** | C90 compiler guide for 8085 (`/compiler-c85`) |
 | **tool-zcc** | `zcc` front end (`-compiler=multi`) |
 | **tool-ticks** | `z88dk-ticks` (CPU flag before the binary) |
 | **tool-z80asm** | assembler, synthetics, 8085 ok/err fixtures |
@@ -50,18 +50,6 @@ Full 8085 opcode tables: `.agents/skills/cpu-8085/references/opcodes.md`
 | **methodology-sdcc-vanilla** | stock `sdcc` benches, not zsdcc |
 
 Official STE standard (copyrighted; do not paste in full): https://asd-ste100.org
-
-## Old names
-
-The 2026 split matches z88dk `.agents/skills/`. These names no longer exist as skill directories:
-
-| Old | Now |
-|-----|-----|
-| `opcode-reference` | `cpu-8085` |
-| `extended-usage` | `cpu-8085` |
-| `z88dk` | `library-classic`, `library-newlib`, `library-math32`, `style-libsrc-layout` |
-| `z88dk-tooling` | `methodology-measure` plus the `tool-*` cards |
-| `ste-writing` | `style-ste-writing` |
 
 ## Related
 

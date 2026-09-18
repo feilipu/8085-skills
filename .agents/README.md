@@ -12,7 +12,7 @@ Canonical tree for AI agent skills in this repo. **Do not duplicate** under othe
     library-classic/
     library-math32/
     compiler-sccz80/
-    compiler-c/              # C90 compiler guide for 8085
+    compiler-c85/            # C90 compiler guide for 8085
     tool-zcc/
     tool-ticks/
     target-cpm/
@@ -59,7 +59,3 @@ Agents must **realpath-dedupe** so following both `.grok` and `.claude` does not
 5. External blogs — last resort  
 
 Do not bulk-read the large fixtures; `rg` the mnemonic.
-
-## Origin
-
-Skill names and split match [z88dk](https://github.com/z88dk/z88dk) `.agents/skills/`. Content started in this repo as `opcode-reference`, `extended-usage`, `z88dk`, `z88dk-tooling`, and `ste-writing`.

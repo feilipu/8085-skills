@@ -1,10 +1,10 @@
 ---
-name: compiler-c
+name: compiler-c85
 description: >
   C90 compiler guide for Intel 8085: emit Zilog assembly for z88dk-z80asm
   -m8085 from standard C. Data model, SMALLC ABI, stack frames, HL as ALU
   bus, BC/DE parking, 8085 extended ops, C90 shape → ISA lowering. Use for
-  /compiler-c, "C compiler guide for 8085", "compile this C to 8085
+  /compiler-c85, "C compiler guide for 8085", "compile this C to 8085
   assembly", "8085 C lowering". Do not use when invoking zcc, 80cc, or
   sccz80 as the compiler, or when editing src/80cc (those are
   compiler-80cc, compiler-sccz80, tool-zcc).

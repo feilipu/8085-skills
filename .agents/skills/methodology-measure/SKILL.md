@@ -92,7 +92,7 @@ Prove the object is current: `z88dk-z80nm lib/clibs/math32_8085.lib | rg 'f32_fs
 | Correctness of float/int libraries | `test/suites/math` (`make test_*_8085.bin` etc.) |
 | Publishable microbenchmarks | `support/benchmarks/*` + classic `+test` TIMER recipes; matrix scripts under `.agents/scripts/` |
 | A/B “did this patch matter?” | Swap one `.asm`, rebuild lib, **same** `zcc` line, compare ticks **and** `cmp` binaries |
-| Agent C90 asm vs 80cc / sccz80 | §6 “Agent-emitted C90”; then patch **`compiler-c`**, not this skill |
+| Agent C90 asm vs 80cc / sccz80 | §6 “Agent-emitted C90”; then patch **`compiler-c85`**, not this skill |
 | Assembler synthetic expansion | `z88dk-z80asm -m8085 -l` and read the `.lis` opcodes |
 
 Other z88dk host tools that often help in this workflow: **`zcc`** (driver),
@@ -518,7 +518,7 @@ tree; they are **not** part of the product PR.
 
 ### Agent-emitted C90 vs 80cc / sccz80
 
-When the agent already emitted 8085 asm with **`compiler-c`**, compare quality here. ABI, residency, and C→ISA lowering stay in **`compiler-c`**. Invoke flags stay in **`compiler-80cc`** / **`compiler-sccz80`**.
+When the agent already emitted 8085 asm with **`compiler-c85`**, compare quality here. ABI, residency, and C→ISA lowering stay in **`compiler-c85`**. Invoke flags stay in **`compiler-80cc`** / **`compiler-sccz80`**.
 
 1. Copy the bench **`z88dk-classic/readme.txt` `zcc` line**. 8085: never `-fframe-pointer`. Fannkuch 8085 adds `--opt-code-speed`; sieve does not. 80cc 8085 **qsort does not link** — skip that row.
 2. Remeasure **both** sides on the **same** toolchain revision. Readme ticks age.
@@ -532,7 +532,7 @@ When the agent already emitted 8085 asm with **`compiler-c`**, compare quality h
 
 4. Bind libc from the **preprocessed prototype**. `__z88dk_callee` → `call _foo_callee`. C may see `__builtin_memset`; asm uses `_memset` / `memset`. Never `EXTERN __builtin_memset`.
 5. `z88dk-ticks -m8085` **before** the binary. `-m` map. TIMER labels at the C source points.
-6. If the agent binary is slower or larger: hotspot the timed region; name the C construct and the ISA miss (HL kept as a local, unused `ld de,sp+*`, `call __z80asm__*` on the hot path, `n--` → `jp nk`, …). Patch **`compiler-c`** (C→8085 table, residency, or do-not-emit). Do not keep those rules in this skill.
+6. If the agent binary is slower or larger: hotspot the timed region; name the C construct and the ISA miss (HL kept as a local, unused `ld de,sp+*`, `call __z80asm__*` on the hot path, `n--` → `jp nk`, …). Patch **`compiler-c85`** (C→8085 table, residency, or do-not-emit). Do not keep those rules in this skill.
 
 ### Float library A/B (math32 / math16)
 
@@ -599,7 +599,7 @@ Hand-written `libsrc/**` is **not** copt'd. Full peephole rules and finalisation
 
 - Opcode map / flags: **`cpu-8085`**
 - 8085 coding rules / stack / synthetics: **`cpu-8085`**
-- Agent C90→8085 lowering: **`compiler-c`**
+- Agent C90→8085 lowering: **`compiler-c85`**
 - Target CRT / serial / disk / `target_io` architecture: **`library-newlib`** / **`library-classic`**
 - Upstream z88dk: https://github.com/z88dk/z88dk  
 - Hotspot discussion (ticks debugger): z88dk issue tooling notes around
@@ -614,4 +614,4 @@ Hand-written `libsrc/**` is **not** copt'd. Full peephole rules and finalisation
 
 - `tool-ticks`, `tool-z80nm`, `tool-dis`, `tool-copt`, `tool-zcc`
 - `compiler-80cc`, `methodology-sdcc-vanilla`
-- Agent C90→8085 emit: `compiler-c`. Compare that asm to 80cc/sccz80 here; feed lowering lessons back into `compiler-c` (do not keep them in this skill)
+- Agent C90→8085 emit: `compiler-c85`. Compare that asm to 80cc/sccz80 here; feed lowering lessons back into `compiler-c85` (do not keep them in this skill)

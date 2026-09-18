@@ -275,4 +275,4 @@ When a subpage disagrees with **`z88dk-z80asm -h`** or `src/z80asm/`, the tool a
 - Driver front end: `tool-zcc`
 - Measurement: `methodology-measure`, `tool-ticks`
 - Per-CPU coding skill in this pack: `cpu-8085`. Other CPU skills live in the z88dk tree. Capability authority remains `src/z80asm/dev/cpu/`.
-- C90 compiler guide (agent emits `-m8085` asm): `compiler-c`
+- C90 compiler guide (agent emits `-m8085` asm): `compiler-c85`
