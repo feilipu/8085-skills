@@ -290,13 +290,12 @@ When a C op is not a few native/extended insns, **consider** the 8085 catalogs b
 |---------|-----|
 | `libsrc/l/sccz80/8085.lst` | 16/32-bit sccz80 runtime (`l_mult`, `l_div`, `l_div_u`, `l_mult_ulong`, `l_long_*`). Includes `8080.lst` for the rest |
 | `libsrc/l/util/8085.lst` | 32-bit shifts `l_lsl_dehl` / `l_asr_dehl`; small ASCII `l_small_utoa` / `l_small_atoul` / `l_small_htoul` / `l_small_otoul` |
-| `libsrc/math/integer/small/` | `l_small_mul_*` / `l_small_muls_*` / `l_small_divu_*` / `l_small_divs_*` (16/32/64). **16×16→32** is `l_small_mul_32_16x16` or `l_mult_ulong` (DEHL = DE×HL) |
 | `libsrc/math/float/math32/` (`asm/8085/`) | IEEE32 cores: `f32_fsadd`, `f32_fsmul`, `f32_fsdiv` (**restoring**), `f32_fsinv` (NR — not for `1.0/x`), `f32_fssqrt`, `f32_fscompare`, `f32_fsconv`, `f32_f2long`, … Higher: `m32_sinf` and peers. Policy: **`library-math32`** |
 | `libsrc/math/float/math16/` (`asm/8085/`) | Half: `asm_f16_add` / `mul` / `div` (restoring) / `inv` (NR) / `sqrt` / `compare` / … Higher: `sinf16` and peers. Policy: **`library-math16`** |
 
 **Open-code; do not call** on 8085: `l_eq`/`l_ne`/`l_lt`/`l_le`/`l_gt`/`l_ge`/`l_ult`/`l_ule`/`l_ugt`/`l_uge` (`sub hl,bc` + K/C/Z); `l_rlde` (native `rl de`); `l_gint*sp` (`ld de,sp+*` / `ld hl,(de)`); `l_pint_*` (`ld (de),hl`); `l_asr` / `l_asr_u` when the count is 1 or a small constant (`sra hl` / logical `>>`). Do not bind `l_setix` / `l_setiy` / f48.
 
-16×16→16 is `l_mult`. 16×16→32 is **`l_mult_ulong`** or **`l_small_mul_32_16x16`**, not `l_mult`. Combined `/` and `%`: one `l_div` / `l_div_u` / `l_long_div*`.
+16×16→16 is `l_mult`. 16×16→32 is **`l_mult_ulong`** (DEHL = DE×HL), not `l_mult`. Combined `/` and `%`: one `l_div` / `l_div_u` / `l_long_div*`.
 
 ## C → 8085 primitives
 
@@ -332,7 +331,7 @@ When a C op is not a few native/extended insns, **consider** the 8085 catalogs b
 | `unsigned long >> 1` | `or a` / `rra` through A across D,E,H,L — not `sra hl` on both halves. C after the last `rra` is the old bit 0 |
 | `int * int` | shift-add for small constants; else `call l_mult` (HL = DE×HL) |
 | `x * 2` / `* 3` / `* 5` / `* 8` / `* 10` / `* 25` | `*8`=`add hl,hl`×3; `*10`=`*8+*2`; `*25`=`*16+*8+*1`. Do not `l_mult` these in a hot loop |
-| `(unsigned long)a * (unsigned long)b` of two 16-bit values | **16×16→32** (`l_mult_ulong` / `l_small_mul_32_16x16`), then keep DEHL. `l_mult` (16×16→16) is a miscompile |
+| `(unsigned long)a * (unsigned long)b` of two 16-bit values | **16×16→32** (`l_mult_ulong`), then keep DEHL. `l_mult` (16×16→16) is a miscompile |
 | signed `/` `%` | `call l_div` unless power-of-two |
 | unsigned `/` `%` | `call l_div_u` unless power-of-two |
 | both `/` and `%` of same ops | **one** helper; take quot and rem |
@@ -542,7 +541,7 @@ the prototype says so.
 
 **Shift then conditional XOR** (one bit, after mixing a data byte): `add a,a` or `add hl,hl`, then `jp nc` skip, else XOR a constant through A.
 
-**Q8.8** `(uint16)((uint32)a * b >> 8)`: `l_mult_ulong` or `l_small_mul_32_16x16` into DEHL, then byte slide L←H, H←E, E←D, D←0; result in HL. Hot path may inline that mul.
+**Q8.8** `(uint16)((uint32)a * b >> 8)`: `l_mult_ulong` into DEHL, then byte slide L←H, H←E, E←D, D←0; result in HL. Hot path may inline that mul.
 
 **Sign-extend L to HL:**
 
@@ -649,6 +648,6 @@ Comparing this output to another compiler, and feeding lessons back into
 - ISA, flags, timings, stack sequences: `cpu-8085`
 - Assemble: `tool-z80asm`
 - Float algorithms: `library-math32`, `library-math16` (div = restoring, inv = NR)
-- Integer helpers: `libsrc/l/sccz80/8085.lst`, `libsrc/l/util/8085.lst`, `libsrc/math/integer/small/`
+- Integer helpers: `libsrc/l/sccz80/8085.lst`, `libsrc/l/util/8085.lst`
 - Classic vs newlib: `library-classic`
 - Optional quality loop vs other compilers: `methodology-measure`
