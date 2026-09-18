@@ -12,6 +12,7 @@ Canonical tree for AI agent skills in this repo. **Do not duplicate** under othe
     library-classic/
     library-math32/
     compiler-sccz80/
+    compiler-c/              # C90 compiler guide for 8085
     tool-zcc/
     tool-ticks/
     target-cpm/

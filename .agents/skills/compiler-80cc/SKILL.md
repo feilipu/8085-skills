@@ -128,3 +128,4 @@ Code generation options
 
 - `tool-zcc`, `tool-copt`, `methodology-measure`, `methodology-sdcc-vanilla` (not 80cc)
 - Multi selector: `src/zcc-multi/zcc-compiler-multi.md`
+- C90 compiler guide for 8085 (agent emits asm): `compiler-c`

@@ -530,6 +530,7 @@ Other common synthetics (not pair-copy): e.g. `ld a,(hl+)` (load + inc index).
 - Full opcode grid: [references/opcodes.md](references/opcodes.md)
 - 8080-only jobs (no extras): `cpu-8080` in the z88dk tree — this pack does not ship it
 - How to read z80asm ok/err fixtures: `tool-z80asm` (`src/z80asm/dev/cpu/` in the z88dk tree)
+- C90 compiler guide (agent emits Zilog asm): `compiler-c`
 - Measurement / A/B: `methodology-measure`
 - copt vs library asm: `tool-copt`
 - Design notes: https://feilipu.me/2021/09/27/8085-software/
