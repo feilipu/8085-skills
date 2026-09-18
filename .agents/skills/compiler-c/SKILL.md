@@ -31,8 +31,18 @@ when the shape is a pointer walk or an induction.
 ## C data model on 8085
 
 Default **`char` is signed**. Little-endian. Integer promotions go to
-16-bit `int`. Struct members: `offset += size` (no 2-byte ABI holes).
-Bitfields: pack by bytes; if the layout is unclear, stop rather than guess.
+16-bit `int`. `short` is 16-bit (same home as `int`). Struct members:
+`offset += size` (no 2-byte ABI holes).
+
+**Unsigned bitfields** (classic 8085 emit): pack **LSB-first** in the
+declared unit (`unsigned` → 16-bit, `unsigned long` → 32-bit). Adjacent
+fields share a unit; a field that does not fit starts a new unit. Emit
+read-modify-write on that unit — not a C bitfield opcode (none exists).
+Offset-0 width-*n* is a mask only (`and (1<<n)-1`). A field that spans a
+byte boundary is a multi-byte RMW. `f->rate++` is extract / add / mask /
+insert, not `inc` of the whole unit. Consecutive writes to the same
+object: keep the unit live in HL or DEHL; store once. **Signed**
+bitfields, or a binary layout that must match another compiler: stop.
 
 If the source typedefs 1/2/4-byte aliases (`BYTE`, `WORD`, `DWORD`,
 `UINT`, `WCHAR`, …), use those widths. They are not extra register homes.
@@ -49,8 +59,10 @@ If the source typedefs 1/2/4-byte aliases (`BYTE`, `WORD`, `DWORD`,
 | `_Float16` | 2 | `library-math16` |
 
 Ingest C90 plus common source sugar: `//` comments, implicit-int `main()`,
-`TIMER_*` macros as **labels** at those sites, `register` as a BC/DE hint
-only.
+`for (T i = 0; …)` and mixed declarations (hoist to the enclosing block;
+do not treat as C99), `TIMER_*` macros as **labels** at those sites,
+`register` as a BC/DE hint only. `Assert` / `assertEqual` bind as ordinary
+calls.
 
 **Storage duration follows the C, not the ISA.** BSS/data only for objects
 that already have static storage duration in the source:
@@ -67,7 +79,8 @@ identifiers the source spelled `STATIC` (that macro becomes `static`). Do
 not promote every local. Do not apply it to automatics of a recursive
 function the source left automatic.
 
-Refuse: VLA, mixed declarations, designated initializers, nested functions.
+Refuse: VLA, designated initializers, nested functions. Mixed declarations
+and `for`-init declarations: hoist, then emit C90.
 `stdint.h` only if the source already uses it. Do not mix newlib `FILE*`
 cores into a classic 8085 image (`library-classic`). Do not rewrite
 1-based arrays to 0-based.
@@ -164,6 +177,8 @@ Parking (C locals that must survive the bus)
 | Word array / `int *` / pointer-to-struct | **DE** | only `ld hl,(de)` / `ld (de),hl` |
 | Byte array, any-register load/store | **HL** | `ld r,(hl)` / `ld (hl),r` |
 | Byte array, A-only | DE or BC | `ld a,(de)` / `ld (de),a` / `(bc)` |
+| Two byte strings at once | **HL** and **DE** | `ld a,(de)` vs `cp (hl)` / `ld (hl),a`. Park one cursor on the stack if HL is needed as ALU |
+| Two word arrays at once | **DE** + **stack** | No second `(de)` bus, no IX. Load one array through DE; the other cursor lives on the stack (`ex (sp),hl` or a slot) |
 | Stride or trip count | **BC** | `add hl,bc` keeps the cursor in HL |
 
 There is no `ld hl,(bc)` and no `ld (bc),hl`. Do not put a word cursor in
@@ -180,6 +195,7 @@ it was parked in BC, DE, or a stack slot.
 2. Keep a stack cursor in **DE** and use `ld hl,(de)` / `ld (de),hl` /
    `ld a,(de)` rather than re-materialising SP every access.
 3. One live `long` or IEEE32: **DEHL**. A second: stack slots.
+   Two walking **word** pointers: DE plus a stack slot — not IY/`exx`.
 4. 8-bit live values in **C** (or B if C is taken). A is the 8-bit ALU.
    Park an 8-bit accumulator in C while a float kernel uses DEHL/A.
 5. `volatile`: memory at every sequence point — no BC/DE home that skips
@@ -224,7 +240,7 @@ If DE is a live home, `push de` around the SP op and add 2 to the offset.
 | `if (x)` / `while (x)` (16) | Test that **writes Z** (`ld a,h` / `or l`) — leftover K is not a truth test |
 | `if (p)` pointer / `== NULL` | `ld a,h` / `or l` |
 | `if (c)` byte | `ld a,c` (or `(hl)`) / `or a` |
-| `a && b` / `a \|\| b` | Short-circuit; each arm writes Z. Cheap int test before a float/call |
+| `a && b` / `a \|\| b` | Short-circuit; skip the second arm. Side-effecting operands **must not** run when skipped. Each arm writes Z. Cheap int test before a float/call |
 | `x + y` (16) | `add hl,de` or `add hl,bc` |
 | `x - y` / `==` / `!=` (16) | y in BC; `sub hl,bc`; **Z** for `==` / `!=` |
 | signed `<` / `>=` (16) | `sub hl,bc` then **immediately** `jp k` / `jp nk` |
@@ -237,20 +253,27 @@ If DE is a live home, `push de` around the SP op and add 2 to the offset.
 | `p++` (byte / word ptr) | `inc de` / `inc de` twice (or `ld hl,2` / `add hl,de`) |
 | `*p++ = byte` | `ld (de),a` / `inc de` |
 | `s << 1` (16) | `add hl,hl` |
-| `s << n` n const 2…8 | repeated `add hl,hl`; larger: loop `add hl,hl` with count in B (`dec b` / `jp nz`, not `djnz`) |
+| `s << n` n const 2…7 | repeated `add hl,hl` |
+| `u << 8` / `u >> 8` unsigned 16 | **byte move**: `ld h,l` / `ld l,0`; `ld l,h` / `ld h,0`. Not eight `add hl,hl` |
+| `u >> 12` unsigned 16 | `>>8` then two `sra hl` + clear H7, or `ld a,h` / four logical `>>` |
 | signed `s >> 1` | `sra hl` (**Z unchanged**) |
 | unsigned `u >> 1` | `sra hl`; force H bit 7 clear (**Z unchanged**) |
+| variable `u << n` / `u >> n` (n live, 1…15) | n in B: `add hl,hl` or logical `>>`; `dec b` / `jp nz`. n==0 is a no-op |
+| variable `byte << n` / `>> n` | n in B: `add a,a` or `or a` / `rra` (logical). Signed byte `>>`: sign-extend to HL first, then `sra hl`, then take L |
+| `(v << n) \| (v >> (16-n))` | 16-bit rotate: park v; `<< n`; OR with logical `>> (16-n)` |
 | `long << 1` | `add hl,hl` / `rl de` |
-| `unsigned long >> 1` | `rra` through A across DEHL — not `sra hl` on both halves |
+| `unsigned long >> 1` | `or a` / `rra` through A across D,E,H,L — not `sra hl` on both halves. C after the last `rra` is the old bit 0 |
 | `int * int` | shift-add for small constants; else `call l_mult` (HL = DE×HL) |
-| `x * 2` / `* 3` / `* 5` | `add hl,hl`; `ld de,hl` / `add hl,hl` / `add hl,de`; `*4`+orig |
-| signed `/` `%` | `call l_div` (HL = DE/HL, DE = remainder) unless power-of-two |
-| unsigned `/` `%` | `call l_div_u` |
+| `x * 2` / `* 3` / `* 5` / `* 8` / `* 10` / `* 25` | `*8`=`add hl,hl`×3; `*10`=`*8+*2`; `*25`=`*16+*8+*1`. Do not `l_mult` these in a hot loop |
+| `(unsigned long)a * (unsigned long)b` of two 16-bit values | **16×16→32**, then keep DEHL. `l_mult` (16×16→16) is a miscompile |
+| signed `/` `%` | `call l_div` unless power-of-two |
+| unsigned `/` `%` | `call l_div_u` unless power-of-two |
 | both `/` and `%` of same ops | **one** helper; take quot and rem |
 | `x % 2` | `ld a,l` / `and 1` — not `l_div` |
 | `x % (1<<n)` unsigned | `and (1<<n)-1` (512 → `and 0x01FF`) |
 | `x / (1<<n)` unsigned | n logical `>>` (sra + clear high bits, or drop bytes) |
 | `x / 2` (non-neg) | `sra hl` |
+| signed `v / (1<<n)` | C rounds **toward zero**. `sra hl` rounds toward −∞. If v<0, add `(1<<n)-1` then `sra` n times. `%` = v − quot×(1<<n) |
 | LE `*(WORD *)p` | pointer in DE: `ld hl,(de)` — 8085 is little-endian, unaligned is legal |
 | LE `*(DWORD *)p` | `ld hl,(de)` (low) / park HL / `inc de`×2 / `ld hl,(de)` (high) / `ex de,hl` / restore low into HL → DEHL. Not a byte-shift chain |
 | `*p++ = (BYTE)val; val >>= 8` | `ld (de),a` with A=L; `inc de`; then **logical** byte slide L←H←E←D, D=0 (unsigned). Not `sra hl` |
@@ -300,6 +323,14 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | 1-based array | `E[1]…E[n]` | Keep the unused `[0]` hole; do not rewrite indexes to 0-based |
 | Power-of-two window | `buf[off % 512]` / `off / 512` | `% 512` is `and 0x01FF`. `/ 512` is `>> 9`. Keep the window base in DE |
 | Multiply by power-of-two field | `(x-2) * (1<<k) + base` | Shift `x-2` by `k`, then add. Not `l_long_mult` when the scale is 1…128 and a power of two |
+| Histogram RMW | `bins[(x >> k) & mask]++` | Index **once**: logical `>>`, `and mask`, `add hl,hl`, add base, **DE** at the cell, `ld hl,(de)` / `inc hl` / `ld (de),hl`. Do not recompute the address for the store |
+| Dual-array saxpy / dot | `y[i]=a*x[i]+y[i]`; `s+=x[i]*y[i]` | Two word cursors: **DE** + stack. `short` stride = 2. Mul clobbers parking — reload both cursors. Cast to `unsigned` before mul if the C does |
+| 5-point stencil | `out[i][j]=in[i][j]+N+S+E+W` | W compile-time: `i*W` is shift-add (40=`*32+*8`). Keep a **row** word cursor; N/S = ±`W` words (`ld bc,±2*W` / `add hl,bc`); E/W = ±2 bytes. No `l_mult` on the hot path. Double-buffer: swap two pointers (DE + stack) |
+| Flattened 2D | `((int *)m)[i]` | Linear word walk after the cast. Param `T m[R][C]` decays to `T (*)[C]`; row stride `C*sizeof(T)` |
+| Open-address probe | `idx = (idx + 1) & (N-1)` | N = `1<<k`: `inc hl` / `ld a,l` / `and` low mask / if N>256 also mask H. Do not `l_div` |
+| Coprime wrap | `idx += STEP; if (idx >= N) idx -= N` | Unsigned `>=` (DSUB **C**); then `sub hl,bc` with N in BC. Not `% N` |
+| djb2 / `h*33+c` | `h = (h<<5)+h+k[i]` | Park h in DE; `add hl,hl`×5; `add hl,de`; add the byte (`ld d,0` / `ld e,c` / `add hl,de`). Mask `& 0xffff` is free on 16-bit |
+| 16-bit LCG | `seed = seed * A + C` | `l_mult` or shift-add for A; `add hl,bc`; wrap is free. File-scope seed is BSS |
 
 ### Loops and conditions
 
@@ -319,6 +350,16 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | `goto L` | labelled loop | `jp L`. Counted `j+=1; if (j<n) goto L` is an 8-bit `inc c` / `ld a,c` / `cp n` / `jp c` (unsigned) |
 | `do { … } while (n)` fill | counted body | Count in B/C; `dec b` / `jp nz`. Body often a byte store through HL |
 | `do { … } while (0)` | statement macro | Not a loop — emit the body once |
+| `while (p < end)` pointers | byte/word walk vs sentinel | **Unsigned** `<` on the addresses: DSUB **C**. End in BC, p in HL/DE |
+| Nested run-length | inner `while` equal bytes, cap 255 | Outer in-cursor **HL**, out-cursor **DE**, run in **C**. Inner: `ld a,(hl)` / `cp v` / `inc hl` / `inc c` / stop on Z of `inc c` (wrap 255→0) or mismatch |
+| Binary search | `mid=(lo+hi)>>1`; `lo=mid+1` / `hi=mid-1` | Non-neg: `add hl,de` / `sra hl`. `lo<=hi` is K **or** Z. Indexed load: `add hl,hl` + table base → DE / `ld hl,(de)`. Masked `tab[mid]&m`: AND in A per byte; do not steal the `hi` home (park `hi` in BC or stack) |
+| Insertion shift-up | `while (j>=0 && v[j]>key) v[j+1]=v[j]` | Short-circuit: signed `j<0` (S/K) **before** the load. Word copy: DE at `&v[j]`, `ld hl,(de)` / `inc de`×2 / `ld (de),hl`, then step DE back 4 |
+| `while (*p)` / `p-s` | strlen | HL at s; `xor a` / `cp (hl)` / `jp z` done / `inc hl` / loop. Do not `inc` on the NUL. Length = HL − start (`ex de,hl` / start in BC / `sub hl,bc`) |
+| `while (*a && *a==*b)` | strcmp | DE and HL; `ld a,(de)` / `cp (hl)` / `jp nz`; `or a` / `jp z` equal; `inc de` / `inc hl`. Return `(unsigned char)*a - (unsigned char)*b` in HL |
+| `while ((*d++=*s++))` | strcpy | DE=src, HL=dst; `ld a,(de)` / `ld (hl),a` / `inc de` / `inc hl` / `or a` / `jp nz` |
+| Range ladder | `if (c<32)… else if (c<48)…` | Keep the byte in **A**. Successive `cp` / `jp nc` — do not reload. Lexer class: ws / alpha / digit / other as 8-bit unsigned ranges (`'_'` is a `cp`) |
+| Clamp / saturate | `if (v>hi) v=hi; if (v<lo) v=lo` | Signed: DSUB then K; assign the bound. Same variable on both arms — one home |
+| Side-effect `&&` / `\|\|` | `a < b && probe(c) > d` | Jump over `probe` when `a<b` is false. Flattening to arithmetic is a miscompile |
 
 ### Widths, bits, 32-bit
 
@@ -342,6 +383,19 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | UTF-8 / UTF-16 unit | `uc << 6 \| (tb & 0x3F)` | 32-bit shift-or; continuation test `tb & 0xC0` is `and 0xC0` / `cp 0x80` |
 | Allocated-bit in `size_t` | `x & (1<<(sizeof(size_t)*8-1))` | MSB of a 16-bit size is **H bit 7**. Test `ld a,h` / `or a` / `jp m` (or `rla` / `jp c`). **No** Z80 `bit 7,h` |
 | Overflow guard | `a > SIZE_MAX - b` | Unsigned 16-bit: `ld hl,MAX` / `sub hl,bc` / `jp c` then compare `a` |
+| CRC-8 bit-serial | `c^=*p++; (c&0x80)?(c<<1)^p:(c<<1)` ×8 | Acc in **A** (park in C across the pointer inc). `add a,a` / `jp nc` / `xor poly`. Pointer vs `end`: unsigned |
+| CRC-16 bit-serial | `crc^=(*p++)<<8` then MSB×8 | CRC in **HL**. XOR byte into H; eight× `add hl,hl` / `jp nc` / XOR poly `0x1021` into HL through A |
+| CRC-32 bit-serial | `(crc&1)?(crc>>1)^poly:(crc>>1)` ×8 | CRC in **DEHL**. XOR byte into L. Logical `>>1` (`or a` then `rra` D,E,H,L); if C (old bit 0) XOR `0xEDB88320`. Final `^ ~0UL` is `cpl` on D, E, H, L |
+| 16-bit rotate | `(a<<5)\|(a>>11)` | Park in BC; `add hl,hl`×5; OR with logical `B>>3` into L. General: `(v<<n)\|(v>>(16-n))` |
+| Boolean mix | `(b&c)\|((~b)&d)` | 16-bit: `cpl` both bytes of b; AND/OR per byte in A. Four live words: extras on the stack |
+| Q8.8 mul | `(u16*u16)>>8` → u16 | 16×16→**32** then **byte slide** `>>8` (L←H←E←D, D=0). Not `l_mult`, not `sra hl` |
+| Sign-extend `char`→`int` | `int x = sc;` | `ld a,l` / `add a,a` / `sbc a,a` / `ld h,a` |
+| Zero-extend `unsigned char`→`int` | `int x = uc;` | `ld h,0`. Promotes to **signed** `int` (the sum can go negative) |
+| Sign-extend `int`→`long` | `(long)i` / `(unsigned long)(long)i` | HL as-is; `ld a,h` / `add a,a` / `sbc a,a` / `ld d,a` / `ld e,a` |
+| Zero-extend via `(unsigned)` | `(unsigned long)(unsigned)i` | HL truncated; `ld de,0` — not sign-extend |
+| Narrowing store | `(signed char)(v>>k)` / `(unsigned char)` | **One** byte `ld (de),a` or `ld (hl),a`. Must not write the neighbour |
+| Unsigned bitfield RMW | `r->rate++`; `r->flag=1` | LSB-first in the unit. Extract = shift + mask; insert = `and ~mask` / `or`. Keep the unit live across a burst of field writes |
+| `~b` 16-bit | `~b` in a mix | `ld a,l` / `cpl` / `ld l,a`; same for H. 8-bit: `cpl` A |
 
 ### Structs, pointers, calls
 
@@ -360,8 +414,18 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | Array of lists | `lists[prio]` | Small unsigned index: `add hl,hl` (pointer scale) + base. Empty walk is 8-bit `dec c` / `jp nz` if the count is 8-bit |
 | Circular byte/item queue | `w += size`; wrap at `tail` | Byte cursor HL or DE; add item size. Unsigned `>= tail` via DSUB **C**. Copy payload with `_memcpy` or a counted `ld a,(de)` / `ld (hl),a` / `inc` loop |
 | Address-ordered free list | split/coalesce blocks | Word pointers. Compare addresses **unsigned** (C). `size_t` is 16-bit |
-| `malloc` / `free` / `memcpy` / `strlen` / `strcpy` / `strcmp` / `qsort` | hosted libc | Bind the preprocessed `PUBLIC`. Do not open-code unless the count is tiny and in the TIMER region |
+| `malloc` / `free` / `memcpy` / `strlen` / `strcpy` / `strcmp` / `qsort` | hosted libc **call** | Bind the preprocessed `PUBLIC`. If the source **writes** the loop (`while (*p)`), emit the byte-walk — do not replace it with a library call |
 | Function pointer | `(*fp)(args)` / `qsort(..., cmp)` | Push args then `ld hl,_fn` / call-through-HL (`jp (hl)` / library trampoline). No IX vtable |
+| Pointer table dispatch | `ops[k & 7](a, b)` | `k&7`; `add hl,hl` (pointer scale); base + DE; `ld hl,(de)`; push args; `jp (hl)` / trampoline. Same stride as `int ops[]` |
+| Opaque callback loop | `acc = f(acc, i)` | **Every** home dies across `call`. Acc, i, n, f on the stack; reload each iter |
+| Dense `switch` VM | `op = prog[pc++]; switch(op)` | Table of addresses, `jp (hl)`. Operand stack `stk[++sp]`: word cursor DE, `sp` in BC (`inc bc` / `dec bc` with scale). Parallel arrays `code[pc]`,`a1[pc]`: three bases or one insn stride |
+| Stationary `p->a` / `p->b` | many fields, p does not move | **No IX.** Park p in DE (or stack). Each field: `ld hl,off` / `add hl,de` / `ex de,hl` / `ld hl,(de)` — or `ld de,hl+off` from a parked copy of p in HL. Do not reload p from BSS per field |
+| Array of structs walk | `s += a[i].x+a[i].y; a[i].z = s` | Element cursor **DE**, stride `sizeof` in **BC**. Fields at +0,+2,+4 via `ld hl,(de)` / `inc de`×2 or `ld de,hl+off`. Step DE by sizeof once per element |
+| Singly-linked chase | `while (p) { s+=p->val; p=p->next; }` | p in DE. Load `val` first, load `next` last, `or` for NULL. Write pass: `ld hl,(de)` / `inc hl` / `ld (de),hl` then chase |
+| Deep recursion | N-queens / qsort_rec | Automatics **stack-only** (col, row, lo, hi, i). File-scope `board[]` is BSS. `if (d<0) d=-d`: DSUB then K, negate (`sub hl,hl` / `sub hl,bc`). Fnptr compare: spill the partition state |
+| Frame-resident array | `int loc[16]; … loc[k]` | Allocate on SP (`ld hl,-n` / `add hl,sp` / `ld sp,hl`). Base `ld de,sp+*`. Dynamic k: `add hl,hl` / `add hl,de` / `ex de,hl` / `ld hl,(de)`. **No** `add hl,ix` |
+| Address-taken local | `f(&v)` / `f(&t[i])` | Real stack slot. Reload v and the array after the call. Cannot keep v in BC across `call` |
+| `T m[R][C]` parameter | decays to `T (*)[C]` | Row is pointer + `i * C * sizeof(T)`. Inner j walks a row cursor |
 | Task / `void (*)(void *)` | push param, call through HL | SMALLC: push `void *`, `jp (hl)`. A yield **clobbers** A F BC DE HL; reload from TCB/stack |
 | `*(const T *)p` | comparator load | Arg pointer in DE: `ld hl,(de)` |
 | Out-parameter | `void f(..., T *out)` | Address in DE; store DEHL with `ld (de),hl` / high half via `inc de`×2 or a second cursor |
@@ -387,14 +451,65 @@ the prototype says so.
 | Horner / iterate | several live floats | Hoist invariants. Spill the second complex pair; do not pretend `exx` exists |
 | `pow(2, integer)` assigned to integer | `1 << n` | `ld hl,1` / `add hl,hl` `n` times (or 32-bit if width is long). Do not call `pow` for that |
 | Compare `<=` float | library compare | Flags after the call are the helper’s, not K from DSUB |
+| `fabs(a-b) < eps` | tolerance | Library sub; if negative, negate; compare to eps. Do not `==` on IEEE32 vs MBF32 |
+| `static T v[N]` inside a function | local with `static` | BSS/data. Automatic `T v[N]` is stack |
+
+### Sequences (use these, not Z80 `(ix+d)` / `exx`)
+
+**Unsigned long `>> 1`**, C ← old bit 0 (CRC-32 and any logical 32-bit shr):
+
+```asm
+    xor a              ; C = 0 (logical). `or a` on D also works if D is tested
+    ld  a,d
+    rra
+    ld  d,a
+    ld  a,e
+    rra
+    ld  e,a
+    ld  a,h
+    rra
+    ld  h,a
+    ld  a,l
+    rra
+    ld  l,a            ; C = old L bit 0
+```
+
+**CRC-8 / CRC-16 one bit** (after the data XOR): `add a,a` or `add hl,hl`, then `jp nc` skip, else XOR the poly through A.
+
+**Q8.8** `(uint16)((uint32)a * b >> 8)`: 16×16→32 helper into DEHL, then byte slide L←H, H←E, E←D, D←0; result in HL.
+
+**Sign-extend L to HL:**
+
+```asm
+    ld  a,l
+    add a,a
+    sbc a,a
+    ld  h,a
+```
+
+**Stationary struct** (p in DE, field at +4):
+
+```asm
+    push de
+    ld  hl,4
+    add hl,de
+    ex  de,hl
+    ld  hl,(de)
+    pop de             ; p restored
+```
+
+If several fields, copy p to the stack once and form each `ld de,hl+off` from a parked HL = p.
+
+**Dense switch** (opcode in A, 0…n): `add a,a` / `ld h,0` / `ld l,a` / add table base / `ld e,(hl)` / `inc hl` / `ld d,(hl)` / `ex de,hl` / `jp (hl)`. Tiny n: `cp` chain.
 
 ## Optimise from the ISA
 
 Correct C90 + this ABI first. Then **cycles**, then **bytes**. Timings and
 flag side effects: **`cpu-8085`**.
 
-1. **Name the shape**, then emit it (pointer walk, induction, combined
-   divmod, variable shift). Index arithmetic is the fallback.
+1. **Name the shape**, then emit it (pointer walk, dual cursors, CRC bit,
+   Q8.8, bitfield RMW, combined divmod, variable shift). Index arithmetic
+   is the fallback.
 2. **Use the extra ops.** `ld de,sp+n` beats `ld hl,nn`/`add hl,sp` for
    unsigned 8-bit offsets. `sub hl,bc` is the 16-bit subtract, signed
    compare (K), and unsigned compare (C). `rl de` with `add hl,hl` is the
@@ -438,6 +553,11 @@ flag side effects: **`cpu-8085`**.
 | `-fframe-pointer` | No IX |
 | Intel mnemonics | Zilog in this tree |
 | `__sdcccall(1)` objects | Not this ABI |
+| `l_mult` for 16×16→32 (Q8.8, widening mul) | Product exceeds 16 bits — use a long mul, then shift |
+| Eight `add hl,hl` for `<< 8` | Byte move `ld h,l` / `ld l,0` |
+| `sra hl` for signed `/ (1<<n)` of a negative | C toward zero needs the bias `(1<<n)-1` first |
+| `(iy+d)` / `add iy,de` for `p->field` | No IY. Park p in DE / stack |
+| Evaluating both arms of `&&` / `\|\|` | Side effects and checksum probes diverge |
 
 ## Workflow
 
