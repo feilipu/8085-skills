@@ -21,8 +21,9 @@ assignment, and how C constructs map onto that ISA.
 Optimise from the **8085 instruction set**, not from Z80 habit. Extended
 ops (`ld de,sp+*`, `ld hl,(de)`, `ld (de),hl`, `sub hl,bc`, `rl de`,
 `sra hl`, `jp k` / `jp nk`) are first-class on every 8085. There is no IX,
-no `exx`, no native `djnz`, and no 2-byte `jr` (`18` is `rl de`; assembler
-`jr` becomes a 3-byte `jp`).
+no `exx`, no native `djnz`, and no 2-byte `jr` (`18` is `rl de`). Assembler
+`jr` becomes a 3-byte `jp`. **8085-only listings write `jp`.** Dual-CPU
+library source may write `jr` (`cpu-8085`).
 
 **Shape before statements.** Name the C90 shape in a function (walking
 byte array, word swap, pre-dec-to-zero, struct cursor, …) and emit the
@@ -154,7 +155,7 @@ _foo:
 ```
 
 Zilog, lowercase, four-space indent. No Intel names (`LXI`, `DSUB`, `LDSI`).
-Blank line after a PC break: **Listing layout**.
+Blank line after a PC break: **Listing layout**. Prefer **saccharine** (below).
 
 ## Registers — what the ISA actually gives C
 
@@ -263,9 +264,29 @@ Zilog `;` only. Same-line or above the block. Do not invent commentary that is n
 
 ## Listing layout
 
-One **blank line** after any instruction that does not fall through: `jp`, `jp cc` (`z`/`nz`/`c`/`nc`/`k`/`nk`/`m`/`p`/`pe`/`po`), `jp (hl)`, `ret`, `ret cc`. Assembler `jr` is a 3-byte `jp` here — same blank.
+One **blank line** after any instruction that does not fall through: `jp`, `jp cc` (`z`/`nz`/`c`/`nc`/`k`/`nk`/`m`/`p`/`pe`/`po`), `jp (hl)`, `ret`, `ret cc`. Assembler `jr` is a 3-byte `jp` here — same blank. **New 8085-only emit writes `jp`, not `jr`.**
 
 **Not** after `call` / `call cc`: the program counter returns. Do not insert a blank between `call` and the next instruction.
+
+**Existing libsrc:** match that file’s whitespace (`cpu-8085`). Do not restyle a math32/math16 core to this layout while editing it.
+
+## Saccharine
+
+**Saccharine** is zero-cost z80asm sugar: the listing is one mnemonic; the bytes and flags are exactly the two (or one) chip ops you would have written. **Write it.** Full family: **`cpu-8085`** §10. Normal `-m8085`; strict / `-no-synth` rejects it.
+
+| Write | Instead of |
+|-------|------------|
+| `ld bc,de` / `ld de,hl` / `ld hl,bc` | `ld b,d` / `ld c,e` (pairs **bc/de/hl** only) |
+| `ld a,(hl+)` / `ld b,(hl+)` / `ld (hl+),a` | `ld a,(hl)` / `inc hl` |
+| `ld a,(de+)` / `ld (de+),a` / `ld (de-),a` | `ld a,(de)` / `inc de` |
+
+```asm
+    ld  a,(de+)        ; *p++
+    ld  (hl+),a        ; *q++ = a
+    ld  bc,hl          ; park
+```
+
+**Not saccharine:** `ld (de),l`, `ld b,(de+)`, `ld (de+),n` (`ex de,hl`); `sub hl,de` (helper `call`). Chip `(de)` byte traffic is still **A only**.
 
 ```asm
     sub hl,bc
@@ -318,7 +339,7 @@ When a C op is not a few native/extended insns, **consider** the 8085 catalogs b
 | `*p` / `*p =` (byte) | pointer in HL: `ld a,(hl)` / `ld (hl),a` (or `(de)` if A-only) |
 | `p->field` | Pointer in HL: `ld de,hl+off` (off unsigned 8-bit) then `(de)`. Pointer already in DE: `ld hl,off` / `add hl,de` (or `ex de,hl` first). Off > 255: `ld hl,nn` / `add hl,de` |
 | `p++` (byte / word ptr) | `inc de` / `inc de` twice (or `ld hl,2` / `add hl,de`) |
-| `*p++ = byte` | `ld (de),a` / `inc de` |
+| `*p++ = byte` | **`ld (de+),a`** (saccharine). Word: `ld (de),hl` then `inc de` twice |
 | `s << 1` (16) | `add hl,hl` |
 | `s << n` n const 2…7 | repeated `add hl,hl` |
 | `u << 8` / `u >> 8` unsigned 16 | **byte move**: `ld h,l` / `ld l,0`; `ld l,h` / `ld h,0`. Not eight `add hl,hl` |
@@ -364,9 +385,10 @@ other 16-bit `dec`), K means the pair became **−1**, not 0. After
 that instruction. Unsigned order is **C** (borrow) on that same `sub hl,bc`.
 Do not mix them. Do not copy Z80 `dec bc; jp nz`.
 
-**`(de)` stores:** only `ld (de),a` and `ld (de),hl`. There is no
-`ld (de),l` as a chip op (the assembler may expand it; do not rely on that
-in hot code).
+**`(de)` stores:** chip ops are `ld (de),a` and `ld (de),hl` (loads
+`ld a,(de)` / `ld hl,(de)`). There is no `ld (de),l` / `ld (de),n` as a
+chip op. **Do** write saccharine `ld a,(de+)` / `ld (de-),a`. **Do not**
+write `ld (de),l` (paid `ex de,hl`). Same rule: **`cpu-8085`**.
 
 ## Recognise these C90 shapes
 
@@ -386,7 +408,7 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | 2D `int a[R][C]` | `A[i][j]` | `i*C+j` then `add hl,hl`. `*50` = `*2 + *16 + *32` (`add hl,hl` then `add hl,hl`×4 + orig) |
 | `p + k` / `s[k]` | byte pointer + const | `ld de,hl+off` if off is u8, else `add hl,de` |
 | `&arr[i]` then fields | `b = &arr[i]; b->x` | Form `b` **once** in DE; `ld de,hl+off` per field. Do not redo `i*sizeof` for every member |
-| `*out++ = byte` | packed output | `ld (de),a` / `inc de` |
+| `*out++ = byte` | packed output | **`ld (de+),a`** |
 | 1-based array | `E[1]…E[n]` | Keep the unused `[0]` hole; do not rewrite indexes to 0-based |
 | Power-of-two window | `buf[off % 512]` / `off / 512` | `% 512` is `and 0x01FF`. `/ 512` is `>> 9`. Keep the window base in DE |
 | Multiply by power-of-two field | `(x-2) * (1<<k) + base` | Shift `x-2` by `k`, then add. Not `l_long_mult` when the scale is 1…128 and a power of two |
@@ -421,9 +443,9 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | Nested run-length | inner `while` equal bytes, cap 255 | Outer in-cursor **HL**, out-cursor **DE**, run in **C**. Inner: `ld a,(hl)` / `cp v` / `inc hl` / `inc c` / stop on Z of `inc c` (wrap 255→0) or mismatch |
 | Binary search | `mid=(lo+hi)>>1`; `lo=mid+1` / `hi=mid-1` | Non-neg: `add hl,de` / `sra hl`. `lo<=hi` is K **or** Z. Indexed load: `add hl,hl` + table base → DE / `ld hl,(de)`. Masked `tab[mid]&m`: AND in A per byte; do not steal the `hi` home (park `hi` in BC or stack) |
 | Insertion shift-up | `while (j>=0 && v[j]>key) v[j+1]=v[j]` | Short-circuit: signed `j<0` (S/K) **before** the load. Word copy: DE at `&v[j]`, `ld hl,(de)` / `inc de`×2 / `ld (de),hl`, then step DE back 4 |
-| `while (*p)` / `p-s` | strlen | HL at s; `xor a` / `cp (hl)` / `jp z` done / `inc hl` / loop. Do not `inc` on the NUL. Length = HL − start (`ex de,hl` / start in BC / `sub hl,bc`) |
-| `while (*a && *a==*b)` | strcmp | DE and HL; `ld a,(de)` / `cp (hl)` / `jp nz`; `or a` / `jp z` equal; `inc de` / `inc hl`. Return `(unsigned char)*a - (unsigned char)*b` in HL |
-| `while ((*d++=*s++))` | strcpy | DE=src, HL=dst; `ld a,(de)` / `ld (hl),a` / `inc de` / `inc hl` / `or a` / `jp nz` |
+| `while (*p)` / `p-s` | strlen | HL at s; `xor a` / `cp (hl)` / `jp z` done / **`inc hl` only after a non-NUL** (or `cp (hl+)` only when you consume the byte). Do not `inc` on the NUL. Length = HL − start (`ex de,hl` / start in BC / `sub hl,bc`) |
+| `while (*a && *a==*b)` | strcmp | DE and HL; `ld a,(de)` / `cp (hl)` / `jp nz`; `or a` / `jp z` equal; then **`inc de` / `inc hl`** (or `ld a,(de+)` only on the continue path). Return `(unsigned char)*a - (unsigned char)*b` in HL |
+| `while ((*d++=*s++))` | strcpy | DE=src, HL=dst; `ld a,(de+)` / `ld (hl+),a` / `or a` / `jp nz` |
 | Range ladder | `if (c<32)… else if (c<48)…` | Keep the byte in **A**. Successive `cp` / `jp nc` — do not reload. Lexer class: ws / alpha / digit / other as 8-bit unsigned ranges (`'_'` is a `cp`) |
 | Clamp / saturate | `if (v>hi) v=hi; if (v<lo) v=lo` | Signed: DSUB then K; assign the bound. Same variable on both arms — one home |
 | Side-effect `&&` / `\|\|` | `a < b && probe(c) > d` | Jump over `probe` when `a<b` is false. Flattening to arithmetic is a miscompile |
@@ -566,7 +588,7 @@ the prototype says so.
 
 If several fields, copy p to the stack once and form each `ld de,hl+off` from a parked HL = p.
 
-**Dense switch** (opcode in A, 0…n): `add a,a` / `ld h,0` / `ld l,a` / add table base / `ld e,(hl)` / `inc hl` / `ld d,(hl)` / `ex de,hl` / `jp (hl)`. Tiny n: `cp` chain.
+**Dense switch** (opcode in A, 0…n): `add a,a` / `ld h,0` / `ld l,a` / add table base / `ld e,(hl+)` / `ld d,(hl)` / `ex de,hl` / `jp (hl)`. Tiny n: `cp` chain.
 
 ## Optimise from the ISA
 
@@ -589,13 +611,17 @@ flag side effects: **`cpu-8085`**.
    from **Helpers**. Measure with **`tool-ticks`** (`-m8085` before the
    binary) when unsure.
 6. **Do not emit Z80-only forms.** No IX, `(ix+d)`, `exx`, native `djnz`,
-   native 2-byte `jr`, `sbc hl,de`. Cost assembler `jr` as `jp` (3 bytes,
-   cond 10/7). Opcode `10` is `sra hl`; opcode `18` is `rl de`.
+   native 2-byte `jr`, `sbc hl,de`. 8085-only listings **write `jp`**
+   (assembler `jr` is still a 3-byte `jp`, cond 10/7). Opcode `10` is
+   `sra hl`; opcode `18` is `rl de`.
 7. **No copt** on this output (hand-written asm). Drop copy-backs yourself
    (`ld a,e` then `ld e,a`; prefer `ex de,hl` / `ld bc,hl` over push/pop
    transfers).
-8. **Listing check.** Assemble `-m8085 -l`. If the hot path shows
-   `call __z80asm__*`, rewrite to a native or extended op.
+8. **Saccharine.** Write `ld bc,de`, `ld a,(hl+)`, `ld (de+),a` — same
+   bytes as the two-insn form (`cpu-8085` §10). Do not write paid
+   synthetics (`ld (de),l`, `call __z80asm__*`).
+9. **Listing check.** Assemble `-m8085 -l`. If the hot path shows
+   `call __z80asm__*`, rewrite to a native, extended, or saccharine form.
 
 ### Do not emit
 
@@ -608,7 +634,7 @@ flag side effects: **`cpu-8085`**.
 | `sbc hl,de` / `sbc hl,bc` as a chip op | Not on 8085; may become a helper `call` |
 | `sub hl,de` as a chip op | DSUB is **HL−BC only** |
 | `adc hl,de` as a chip op | 32-bit carry is `adc a` through the high bytes |
-| `ld (de),r` for r ≠ A, or `ld (de),n` | Illegal |
+| `ld (de),r` for r ≠ A, or `ld (de),n` as a chip op | Illegal. Saccharine `ld (de+),a` is fine; `ld (de),l` is a paid `ex` |
 | Word cursor in BC | No `ld hl,(bc)` |
 | Z80 `bit n,r` / `ld a,i` / `exx` / IX / IY | Not on 8085 — even if accompanying port asm uses them. IFF is `rim`/`sim`; critical is `di`/`ei` |
 | `jp k` after `dec rp` for `== 0` | K means the pair is **−1** |
@@ -635,7 +661,7 @@ flag side effects: **`cpu-8085`**.
 4. Plan residency (word cursor DE, stride BC, byte acc C, one long DEHL).
    Write the function header (Comments) from that plan.
 5. Lower with extended ops; spill across `call`. Carry and expand comments.
-   Blank line after `jp` / `ret` (not after `call`). Inline hot helpers.
+   Blank line after `jp` / `ret` (not after `call`). Saccharine. Inline hot helpers.
 6. Assemble `z88dk-z80asm -m8085 -l`. Rewrite helper calls on the hot path.
 7. If the source uses TIMER macros, emit `TIMER_START` / `TIMER_STOP` as
    **labels at those source points**, not around CRT.
