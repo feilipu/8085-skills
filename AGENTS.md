@@ -89,7 +89,7 @@ This repo has **no** `cpu-z80`, `cpu-gbz80`, `cpu-z180`, `cpu-z80n`, or `cpu-808
 | `compiler-sccz80` | sccz80 + runtime + copt interaction |
 | `compiler-zsdcc` | zsdcc / sdcc_ix / sdcc_iy / patch pin |
 | `compiler-80cc` | 80cc; `-compiler=multi`; 8085 has no IX — do not pass `-fframe-pointer` |
-| `compiler-c85` | C90 → 8085 Zilog asm (agent is the compiler) |
+| `compiler-ac85` | Agent compiler 8085: C90 → Zilog asm |
 
 ### Tools
 

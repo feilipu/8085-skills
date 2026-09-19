@@ -90,4 +90,4 @@ Code generation options
 ## Related
 
 - `tool-copt`, `tool-zcc`, `library-classic`, `cpu-8085`
-- C90 compiler guide for 8085 (agent emits asm): `compiler-c85`
+- C90 compiler guide for 8085 (agent emits asm): `compiler-ac85`

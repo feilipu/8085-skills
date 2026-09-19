@@ -31,7 +31,7 @@ Full 8085 opcode tables: `.agents/skills/cpu-8085/references/opcodes.md`
 | **compiler-sccz80** | sccz80 codegen and `libsrc/l/sccz80/7-8085` runtime |
 | **compiler-zsdcc** | zsdcc / sdcc_ix / sdcc_iy (Z80-class; not the 8085 classic product) |
 | **compiler-80cc** | 80cc; `-compiler=multi`; no `-fframe-pointer` on 8085 |
-| **compiler-c85** | C90 compiler guide for 8085 (`/compiler-c85`) |
+| **compiler-ac85** | Agent compiler 8085: C90 → Zilog asm (`/compiler-ac85`) |
 | **tool-zcc** | `zcc` front end (`-compiler=multi`) |
 | **tool-ticks** | `z88dk-ticks` (CPU flag before the binary) |
 | **tool-z80asm** | assembler, synthetics, 8085 ok/err fixtures |
