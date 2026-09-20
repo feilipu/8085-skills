@@ -154,6 +154,16 @@ z88dk-ticks -m8085 prog.bin
 Use for correctness (`printf` / test harness). Prefer TIMER bounds for
 performance so CRT and I/O do not dominate.
 
+### Metric taxonomy (do not mix)
+
+| Name | What it is | Use |
+|------|------------|-----|
+| multi TSV `ticks selected` / `bytes selected` | Static per-function sum of the `-compiler=multi` winner (80cc-sp or sccz80). Instruction-weighted T-states with literal loop trips | Fair kernel bar vs agent / 80cc / sccz80. **Not** whole-image |
+| TIMER | `z88dk-ticks -m8085 bin -x map -start TIMER_START -end TIMER_STOP -counter …` | Support benches (`sieve`, …). CRT/printf out of the number |
+| whole-program `Ticks:` | `z88dk-ticks -m8085 bin` (suite harness, often `-b msx`) | Correctness + end-to-end. Includes CRT and `printf` |
+
+Agent hybrid vs multi: compare **the same class** (TIMER vs TIMER, whole-program vs whole-program). Do not quote TSV `ticks selected` against a whole-program `Ticks:` line. **Assemble gate** before any ticks claim: `z88dk-z80asm -m8085 -l` clean (`compiler-ac85` Workflow step 6). CPU flag **before** the binary.
+
 **Default `-counter` is 100000000.** A whole-program `+test` run with no
 `-counter` stops there and used to print a bare `100000000` (now
 `Ticks: … (counter limit)`). That is **not** program output. n-body
@@ -519,6 +529,10 @@ tree; they are **not** part of the product PR.
 ### Agent-emitted C90 vs 80cc / sccz80
 
 When the agent already emitted 8085 asm with **`compiler-ac85`**, compare quality here. ABI, residency, and C→ISA lowering stay in **`compiler-ac85`**. Invoke flags stay in **`compiler-80cc`** / **`compiler-sccz80`**.
+
+**8085-support skip probe (Workflow step 0 in `compiler-ac85`).** Before emit or a multi score, try `zcc +test -clib=8085` on the C. Skip — do not invent libc — if the link fails on `qsort`, `_heap`, `pow`, `malloc`, or float helpers. Always skip unless a proven 8085 classic TIMER/`+test` path exists: **n-body, spectral-norm, fasta, binary-trees, sorting, dhrystone, coremark**. `coremark10` / `sprintf` / `sscanf` / `gamer_benchmark` have no in-tree +test 8085 recipe.
+
+**zcc-multi float:** `-compiler=multi` does not forward `--math32` / `--math-mbf32` to the per-variant compiles (`src/zcc/zcc.c` `multi_compiler_args`). Those benches build as f48/genmath and fail (`cpcmath.inc` / `dmul`). The multi “winner” for `mandelbrot`, `n-body`, `whetstone`, `spectral-norm`, `fasta`, `pi` is unstable. Exclude them from numeric comparison; this is a zcc-multi limitation, not an agent or 80cc issue.
 
 1. Copy the bench **`z88dk-classic/readme.txt` `zcc` line**. 8085: never `-fframe-pointer`. Fannkuch 8085 adds `--opt-code-speed`; sieve does not. 80cc 8085 **qsort does not link** — skip that row.
 2. Remeasure **both** sides on the **same** toolchain revision. Readme ticks age.

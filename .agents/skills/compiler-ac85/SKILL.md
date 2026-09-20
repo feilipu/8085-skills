@@ -38,13 +38,32 @@ Default **`char` is signed**. Little-endian. Integer promotions go to
 
 **Unsigned bitfields** (classic 8085 emit): pack **LSB-first** in the
 declared unit (`unsigned` → 16-bit, `unsigned long` → 32-bit). Adjacent
-fields share a unit; a field that does not fit starts a new unit. Emit
-read-modify-write on that unit — not a C bitfield opcode (none exists).
-Offset-0 width-*n* is a mask only (`and (1<<n)-1`). A field that spans a
-byte boundary is a multi-byte RMW. `f->rate++` is extract / add / mask /
-insert, not `inc` of the whole unit. Consecutive writes to the same
-object: keep the unit live in HL or DEHL; store once. **Signed**
-bitfields, or a binary layout that must match another compiler: stop.
+fields share a unit; a field that does not fit starts a new unit.
+Offset-0 width-*n* is a **mask only** (`and (1<<n)-1` on that unit — no
+shift). Emit read-modify-write on that unit — not a C bitfield opcode
+(none exists). A field that spans a byte boundary is a multi-byte RMW.
+`f->rate++` is extract / add / mask / insert, not `inc` of the whole
+unit. Consecutive writes to the same object: keep the unit live in HL
+or DEHL; store once.
+
+**Preserve-mask on RMW.** The bits you `and` back in must include
+**every** bit a later field read tests — even bits this op does not
+touch. “Unused” in the current field is not “don’t care”. Re-derive the
+preserve mask from the full unit layout each RMW; do not reuse a
+narrower mask from the extract step.
+
+**`and` is 8-bit.** `and 0x01FF` assembles as `and 0xFF` (range warning)
+and drops the high mask bit. A >8-bit mask is two ANDs
+(`ld a,l; and lo; ld l,a; ld a,h; and hi; ld h,a`), never `and 0x1FF`.
+
+**sccz80 unsigned-bitfield parity.** sccz80 packs unsigned bitfields
+LSB-first into **byte** units: a field that does not fit the current
+byte starts a new byte. Size is the sum of those allocations
+(`mode:3+chan:5` = 1B, `rate:12` = 2B, `flag:1+level:7` = 1B,
+`spare:4` = 1B → **5B**, not a 16-bit stride-4). Field bit position =
+sum of prior widths. Hybrid agent code that must match sccz80 layout:
+verify against that codegen, or **skip**. **Signed** bitfields, or any
+foreign layout you have not measured: stop.
 
 If the source typedefs 1/2/4-byte aliases (`BYTE`, `WORD`, `DWORD`,
 `UINT`, `WCHAR`, …), use those widths. They are not extra register homes.
@@ -109,6 +128,14 @@ high addresses
   callee locals / pushes  ; grow down
 low  (SP)
 ```
+
+`f(a, b)` pushes `a` then `b`; entry **`[sp+2]=b, [sp+4]=a`**. Arg1 is
+at the **higher** address (pushed first). Do not read arg1 at `[sp+2]`.
+
+A `long` argument is pushed **high word first, then low** (low at the
+lower address). `f(long a)` → entry **`[sp+2]=lo, [sp+4]=hi`**. The
+DEHL **return** home (DE high, HL low) is not the stack order. `g(int x,
+long a)` → `[sp+2]=a.lo, [sp+4]=a.hi, [sp+6]=x`.
 
 `__stdc`: reverse stacked args. `__z88dk_fastcall`: last scalar already in
 HL (or DEHL if 32-bit). `__z88dk_callee`: callee pops (use `pop af` **only**
@@ -209,6 +236,33 @@ it was parked in BC, DE, or a stack slot.
 
 Hot-function homes go in the function header **Uses** line (Comments).
 
+**Hard residency (call-free loops).** `lo` / `hi` / induction / seed /
+cursor homes live in **BC or DE** for the whole loop. Reloading those
+homes from `ld de,sp+*` every iteration is a miscompile when the loop
+has **no** `call`. Four `ld de,sp+*` per binary-search probe = failed
+residency. Park to the stack **only** across a `call`, or when a third
+live word has no free pair.
+
+A park created **before** a long loop changes SP for the whole kernel.
+Every later `ld de,sp+N` uses the **post-park** SP. **Every exit
+including `ret` must pop that park** before the return address is
+consumed. After the loop, re-derive homes from the restored SP — do not
+keep a pre-loop offset.
+
+Any `ld de,sp+*` / `ld hl,(de)` / `ex de,hl` **destroys** the pair it
+names. Park a live home that shares that pair first. Load the value you
+must keep **last**. After `ex de,hl`, the old HL is gone.
+
+**Offset invariant:** `slot now at sp+(N + 2*active_pushes)`. After
+every `push`, every earlier `ld de,sp+N` increases by 2. After every
+`pop`, it decreases by 2. Recompute for the current depth. A `pop`
+inside a swap/RMW block invalidates the next store’s offset — re-derive
+that store from the post-pop SP.
+
+Any `call` to a library helper (`l_mult`, `l_div`, `l_mult_ulong`, …)
+**clobbers BC** (and A F DE HL). Never hold a live home in BC across a
+`call`; keep the counter on the frame.
+
 ## Frames — stack only
 
 No frame pointer. Automatics live on the stack. BSS/data only where C
@@ -236,6 +290,22 @@ Function headers (purpose, inputs with this map, outputs, registers): **Comments
 ; exit: restore SP; ret
 ```
 
+`[sp+n]` is reachable only through a register pointer
+(`ld de,sp+n` / `ld hl,(de)` / `ld (de),a`). `ld a,(sp+n)` /
+`ld (sp+n),a` is a syntax error on `-m8085`.
+
+**`ld hl,N; add hl,sp; ld sp,hl` clobbers HL.** That idiom pops args or
+unwinds the frame and **destroys the SMALLC return home**. Park the
+return first (`ld bc,hl` or `ex de,hl`), unwind, then restore
+`ld hl,bc` before `ret`. `add hl,sp` writes V,C only — a Z already in F
+survives, so `ld a,l; or a` **before** the unwind can still `jp z` after
+it.
+
+**After every `call` + caller-clean, re-derive every `ld de,sp+N` from
+the restored SP.** Call 2 of a recursive pair does not reuse call 1’s
+offsets. Callee-cleaned helpers (`memset_callee`, `memcpy_callee`) pop
+their own args: push exactly the declared word count; do not also pop.
+
 ## Comments
 
 Carry the C into the listing. The `.asm` must still show intent.
@@ -257,6 +327,7 @@ Carry the C into the listing. The `.asm` must still show intent.
 - **Inputs:** each parameter: type, name, stack slot or incoming register (`__z88dk_fastcall` last scalar in HL / DEHL). Include the SMALLC map.
 - **Outputs:** ABI return home (`L` / `HL` / `DEHL` / void). Out-parameters: address + what is stored.
 - **Uses:** live homes (which C object in BC, DE, C, DEHL, which stack slots). A and HL as bus are scratch unless a home. If the body `call`s, **A F BC DE HL** die across that call.
+- **Slots (required on any function that `call`s, and on every recursive function):** a depth diagram of `[sp+N]` after **every** `push` / `pop` / `call` / arg-clean. After `call`, only reload from those documented slots. Deep recursion (N-queens / `qsort_rec`) without a slot map is a miscompile.
 
 **Attached C on non-obvious blocks.** After a shape rewrite, one `;` line with the C that block implements (`while (p < end)`, `acc = (acc << 1) ^ K`, `y[i] = a*x[i] + y[i]`). Do not narrate every opcode.
 
@@ -267,6 +338,11 @@ Zilog `;` only. Same-line or above the block. Do not invent commentary that is n
 One **blank line** after any instruction that does not fall through: `jp`, `jp cc` (`z`/`nz`/`c`/`nc`/`k`/`nk`/`m`/`p`/`pe`/`po`), `jp (hl)`, `ret`, `ret cc`. Assembler `jr` is a 3-byte `jp` here — same blank. **New 8085-only emit writes `jp`, not `jr`.**
 
 **Not** after `call` / `call cc`: the program counter returns. Do not insert a blank between `call` and the next instruction.
+
+**One label scheme per function.** Either all `.local` or all unique
+global names — **never both**. Mixing `.loop:` with bare `bit1:` makes
+`jp loop` bind a different symbol than `jp p,loop` (extra CRC bit,
+wrong checksum).
 
 **Existing libsrc:** match that file’s whitespace (`cpu-8085`). Do not restyle a math32/math16 core to this layout while editing it.
 
@@ -331,14 +407,16 @@ When a C op is not a few native/extended insns, **consider** the 8085 catalogs b
 | `a && b` / `a \|\| b` | Short-circuit; skip the second arm. Side-effecting operands **must not** run when skipped. Each arm writes Z. Cheap int test before a float/call |
 | `x + y` (16) | `add hl,de` or `add hl,bc` |
 | `x - y` / `==` / `!=` (16) | y in BC; `sub hl,bc`; **Z** for `==` / `!=` |
+| boolean-of-equality `==` → 0/1 | **branch to set 1 / set 0**. `sub hl,bc` / `jp z,eq1` / `ld hl,0` / `jp done` / `eq1: ld hl,1`. Do **not** `ld h,0; ld l,a` on a leftover A |
 | signed `<` / `>=` (16) | `sub hl,bc` then **immediately** `jp k` / `jp nk` |
 | signed `<=` / `>` (16) | same `sub hl,bc`: `<=` is K **or** Z; `>` is NK and NZ |
 | unsigned `<` / `>=` (16) | `sub hl,bc` then **immediately** `jp c` / `jp nc` — **C**, not K |
 | unsigned `<=` / `>` (16) | same: `<=` is C **or** Z; `>` is NC and NZ |
+| `i < n` via `n−i` | HL=n, BC=i; `sub hl,bc`; **C means n<i** (borrow). Continue only on no-borrow AND NZ: `jp c,done; jp z,done; jp body`. Do not `jp c,body` |
 | `*p` / `*p =` (word) | pointer in DE: `ld hl,(de)` / `ld (de),hl` |
 | `*p` / `*p =` (byte) | pointer in HL: `ld a,(hl)` / `ld (hl),a` (or `(de)` if A-only) |
 | `p->field` | Pointer in HL: `ld de,hl+off` (off unsigned 8-bit) then `(de)`. Pointer already in DE: `ld hl,off` / `add hl,de` (or `ex de,hl` first). Off > 255: `ld hl,nn` / `add hl,de` |
-| `p++` (byte / word ptr) | `inc de` / `inc de` twice (or `ld hl,2` / `add hl,de`) |
+| `p++` (byte / word ptr) | `inc de` / `inc de` twice (or `ld hl,2` / `add hl,de`). **`inc`/`dec` on a pair are ±1 byte, not ±element** |
 | `*p++ = byte` | **`ld (de+),a`** (saccharine). Word: `ld (de),hl` then `inc de` twice |
 | `s << 1` (16) | `add hl,hl` |
 | `s << n` n const 2…7 | repeated `add hl,hl` |
@@ -346,11 +424,13 @@ When a C op is not a few native/extended insns, **consider** the 8085 catalogs b
 | `u >> 12` unsigned 16 | `>>8` then two `sra hl` + clear H7, or `ld a,h` / four logical `>>` |
 | signed `s >> 1` | `sra hl` (**Z unchanged**) |
 | unsigned `u >> 1` | `sra hl`; force H bit 7 clear (**Z unchanged**) |
+| 8-bit logical `>> n` | **`rra`×n is not a logical shift** (`rra` is rotate-through-carry). n≤4: `rlca`×n then `and ((1<<(8-n))-1)`; or `and a` **before each** `rra`. 16-bit logical: `sra hl` with H=0, or `sra hl` + `ld a,$7f; and h` |
 | variable `u << n` / `u >> n` (n live, 1…15) | n in B: `add hl,hl` or logical `>>`; `dec b` / `jp nz`. n==0 is a no-op |
-| variable `byte << n` / `>> n` | n in B: `add a,a` or `or a` / `rra` (logical). Signed byte `>>`: sign-extend to HL first, then `sra hl`, then take L |
+| variable `byte << n` / `>> n` | n in B: `add a,a` or `and a` / `rra` (logical — `and a` each step). Signed byte `>>`: sign-extend to HL first, then `sra hl`, then take L |
 | `(v << n) \| (v >> (16-n))` | 16-bit rotate: park v; `<< n`; OR with logical `>> (16-n)` |
-| `long << 1` | `add hl,hl` / `rl de` |
-| `unsigned long >> 1` | `or a` / `rra` through A across D,E,H,L — not `sra hl` on both halves. C after the last `rra` is the old bit 0 |
+| `long << 1` | `add hl,hl` (low, C=carry out) then `rl de` (high through that C). The low-half carry **must** enter the high half. Do not `add hl,hl` on each half independently |
+| `2*item-1` on `long` | `long << 1` as above, then `-1` with **borrow** into the high word (`ld a,l; or a` / `dec hl` is not a 32-bit −1). Low `dec hl`; if it underflows, `dec de` |
+| `unsigned long >> 1` | `or a` / `rra` through A across D,E,H,L — not `sra hl` on both halves. C after the last `rra` is the old bit 0. **Each** `rra` is preceded by a clear-C on the first byte only (`xor a` / `or a` on D); later bytes consume the previous C |
 | `int * int` | shift-add for small constants; else `call l_mult` (HL = DE×HL) |
 | `x * 2` / `* 3` / `* 5` / `* 8` / `* 10` / `* 25` | `*8`=`add hl,hl`×3; `*10`=`*8+*2`; `*25`=`*16+*8+*1`. Do not `l_mult` these in a hot loop |
 | `(unsigned long)a * (unsigned long)b` of two 16-bit values | **16×16→32** (`l_mult_ulong`), then keep DEHL. `l_mult` (16×16→16) is a miscompile |
@@ -358,7 +438,7 @@ When a C op is not a few native/extended insns, **consider** the 8085 catalogs b
 | unsigned `/` `%` | `call l_div_u` unless power-of-two |
 | both `/` and `%` of same ops | **one** helper; take quot and rem |
 | `x % 2` | `ld a,l` / `and 1` — not `l_div` |
-| `x % (1<<n)` unsigned | `and (1<<n)-1` (512 → `and 0x01FF`) |
+| `x % (1<<n)` unsigned | mask `(1<<n)-1`. **`and` is 8-bit**: 512 → `ld a,h; and 0x01; ld h,a` (L unchanged), never `and 0x01FF` |
 | `x / (1<<n)` unsigned | n logical `>>` (sra + clear high bits, or drop bytes) |
 | `x / 2` (non-neg) | `sra hl` |
 | signed `v / (1<<n)` | C rounds **toward zero**. `sra hl` rounds toward −∞. If v<0, add `(1<<n)-1` then `sra` n times. `%` = v − quot×(1<<n) |
@@ -369,6 +449,7 @@ When a C op is not a few native/extended insns, **consider** the 8085 catalogs b
 | `float /` | restoring divide (`library-math32`), not inv×mul |
 | `1.0 / x` | still restoring `/`, not `fsinv` |
 | Counted 16-bit loop | `cpu-8085` trip-count identity **or** `dec bc` / `inc b` / `inc c`. **Not** C `n--` → `jp nk` |
+| Counted loop that **may run 0 times** | Test the counter **before** decrement (`ld a,h; or l; jp z,done` then body then `dec hl`). `dec; jp z` runs n−1 times and underflows when n=0 |
 | 8-bit counted loop | `dec b` / `jp nz` (opcode `10` is `sra hl`) |
 | C `n == 0` / post-dec to zero | A test that **writes Z** |
 | `switch` | compare chain (tiny dense enum) or address table via HL; no `jp (ix)` |
@@ -381,9 +462,11 @@ When a C op is not a few native/extended insns, **consider** the 8085 catalogs b
 
 **K is two different flags in two different ops.** After `dec bc` (and
 other 16-bit `dec`), K means the pair became **−1**, not 0. After
-`sub hl,bc`, K means signed **HL < BC**, and only **immediately** after
-that instruction. Unsigned order is **C** (borrow) on that same `sub hl,bc`.
-Do not mix them. Do not copy Z80 `dec bc; jp nz`.
+`sub hl,bc`, **K encodes signed ordering** (`jp k` = signed HL < BC)
+and **C encodes unsigned borrow** (`jp c` = unsigned HL < BC). Pick by
+the C type, not by habit. `lo<=hi` with a possibly negative `hi` is
+**signed** (K or Z). Use K/C **immediately**. Do not mix them. Do not
+copy Z80 `dec bc; jp nz`. Polarities: **Sequences**.
 
 **`(de)` stores:** chip ops are `ld (de),a` and `ld (de),hl` (loads
 `ld a,(de)` / `ld hl,(de)`). There is no `ld (de),l` / `ld (de),n` as a
@@ -410,9 +493,9 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | `&arr[i]` then fields | `b = &arr[i]; b->x` | Form `b` **once** in DE; `ld de,hl+off` per field. Do not redo `i*sizeof` for every member |
 | `*out++ = byte` | packed output | **`ld (de+),a`** |
 | 1-based array | `E[1]…E[n]` | Keep the unused `[0]` hole; do not rewrite indexes to 0-based |
-| Power-of-two window | `buf[off % 512]` / `off / 512` | `% 512` is `and 0x01FF`. `/ 512` is `>> 9`. Keep the window base in DE |
+| Power-of-two window | `buf[off % 512]` / `off / 512` | `% 512` is `ld a,h; and 0x01; ld h,a` (never `and 0x01FF`). `/ 512` is `>> 9`. Keep the window base in DE |
 | Multiply by power-of-two field | `(x-2) * (1<<k) + base` | Shift `x-2` by `k`, then add. Not `l_long_mult` when the scale is 1…128 and a power of two |
-| Histogram RMW | `bins[(x >> k) & mask]++` | Index **once**: logical `>>`, `and mask`, `add hl,hl`, add base, **DE** at the cell, `ld hl,(de)` / `inc hl` / `ld (de),hl`. Do not recompute the address for the store |
+| Histogram RMW | `bins[(x >> k) & mask]++` | Index **once**: logical `>>`, `and mask`, `add hl,hl`, add base. **DE** = cell address (home for the whole RMW). **HL** = live unit (`ld hl,(de)` / `inc hl` / `ld (de),hl`). Do not recompute the address for the store. Seed/index stay in BC/DE if the loop is call-free; `l_mult` for the LCG kills those homes |
 | Dual-array saxpy / dot | `y[i]=a*x[i]+y[i]`; `s+=x[i]*y[i]` | Two word cursors: **DE** + stack. `short` stride = 2. Mul clobbers parking — reload both cursors. Cast to `unsigned` before mul if the C does |
 | 5-point stencil | `out[i][j]=in[i][j]+N+S+E+W` | W compile-time: `i*W` is shift-add (40=`*32+*8`). Keep a **row** word cursor; N/S = ±`W` words (`ld bc,±2*W` / `add hl,bc`); E/W = ±2 bytes. No `l_mult` on the hot path. Double-buffer: swap two pointers (DE + stack) |
 | Flattened 2D | `((int *)m)[i]` | Linear word walk after the cast. Param `T m[R][C]` decays to `T (*)[C]`; row stride `C*sizeof(T)` |
@@ -441,7 +524,7 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | `do { … } while (0)` | statement macro | Not a loop — emit the body once |
 | `while (p < end)` pointers | byte/word walk vs sentinel | **Unsigned** `<` on the addresses: DSUB **C**. End in BC, p in HL/DE |
 | Nested run-length | inner `while` equal bytes, cap 255 | Outer in-cursor **HL**, out-cursor **DE**, run in **C**. Inner: `ld a,(hl)` / `cp v` / `inc hl` / `inc c` / stop on Z of `inc c` (wrap 255→0) or mismatch |
-| Binary search | `mid=(lo+hi)>>1`; `lo=mid+1` / `hi=mid-1` | Non-neg: `add hl,de` / `sra hl`. `lo<=hi` is K **or** Z. Indexed load: `add hl,hl` + table base → DE / `ld hl,(de)`. Masked `tab[mid]&m`: AND in A per byte; do not steal the `hi` home (park `hi` in BC or stack) |
+| Binary search | `mid=(lo+hi)>>1`; `lo=mid+1` / `hi=mid-1` | **Mandatory homes (call-free):** `lo` **BC**, `hi` **DE** (or reverse), `mid` in HL once. Reload lo/hi from the stack **only after `call`**. Non-neg mid: `add hl,de` / `sra hl`. `lo<=hi` is signed K **or** Z (`hi` may be −1). Indexed load: `add hl,hl` + table base → DE / `ld hl,(de)` — park `hi` first if that load needs DE. Masked `tab[mid]&m`: AND per byte in A (`and` is 8-bit). Four `ld de,sp+*` per probe = failed residency |
 | Insertion shift-up | `while (j>=0 && v[j]>key) v[j+1]=v[j]` | Short-circuit: signed `j<0` (S/K) **before** the load. Word copy: DE at `&v[j]`, `ld hl,(de)` / `inc de`×2 / `ld (de),hl`, then step DE back 4 |
 | `while (*p)` / `p-s` | strlen | HL at s; `xor a` / `cp (hl)` / `jp z` done / **`inc hl` only after a non-NUL** (or `cp (hl+)` only when you consume the byte). Do not `inc` on the NUL. Length = HL − start (`ex de,hl` / start in BC / `sub hl,bc`) |
 | `while (*a && *a==*b)` | strcmp | DE and HL; `ld a,(de)` / `cp (hl)` / `jp nz`; `or a` / `jp z` equal; then **`inc de` / `inc hl`** (or `ld a,(de+)` only on the continue path). Return `(unsigned char)*a - (unsigned char)*b` in HL |
@@ -472,8 +555,8 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | UTF-8 / UTF-16 unit | `uc << 6 \| (tb & 0x3F)` | 32-bit shift-or; continuation test `tb & 0xC0` is `and 0xC0` / `cp 0x80` |
 | Allocated-bit in `size_t` | `x & (1<<(sizeof(size_t)*8-1))` | MSB of a 16-bit size is **H bit 7**. Test `ld a,h` / `or a` / `jp m` (or `rla` / `jp c`). **No** Z80 `bit 7,h` |
 | Overflow guard | `a > SIZE_MAX - b` | Unsigned 16-bit: `ld hl,MAX` / `sub hl,bc` / `jp c` then compare `a` |
-| Bit-serial feedback, MSB out | `acc ^= *p++;` then 8× `(acc & msb) ? (acc<<1)^K : (acc<<1)` | 8-bit: acc in **A** (park in C across the pointer inc), `add a,a` / `jp nc` / `xor K`. 16-bit: acc in **HL**, XOR the byte into H, eight× `add hl,hl` / `jp nc` / XOR K through A. Pointer vs `end`: unsigned |
-| Bit-serial feedback, LSB out | `acc ^= *p++;` then 8× `(acc & 1) ? (acc>>1)^K : (acc>>1)` | Acc in **DEHL**. XOR the byte into L. Logical `>>1`; if C (old bit 0) XOR K into DEHL. Final `^ ~0UL` is `cpl` on D, E, H, L |
+| Bit-serial feedback, MSB out | `acc ^= *p++;` then 8× `(acc & msb) ? (acc<<1)^K : (acc<<1)` | **CRC-16 map (fixed):** acc **HL**, byte cursor **DE**, end **BC**. Do not push crc per byte. XOR poly `0x1021` as `ld a,l; xor 0x21; ld l,a` / `ld a,h; xor 0x10; ld h,a`. Quality bar vs 80cc-sp: **156 B** for `_crc16_ccitt`. 8-bit: acc in **A** (park in C across the pointer inc), `add a,a` / `jp nc` / `xor K`. Pointer vs `end`: unsigned `sub hl,bc` with end in BC |
+| Bit-serial feedback, LSB out | `acc ^= *p++;` then 8× `(acc & 1) ? (acc>>1)^K : (acc>>1)` | Acc in **DEHL**. XOR the byte into L. Logical `>>1` (Sequences). If C (old bit 0) XOR poly **`0xEDB88320` in D,E,H,L order**: `xor 0xED` → D, `0xB8` → E, `0x83` → H, `0x20` → L. Final `^ ~0UL` is `cpl` on D, E, H, L |
 | 16-bit rotate | `(a<<5)\|(a>>11)` | Park in BC; `add hl,hl`×5; OR with logical `B>>3` into L. General: `(v<<n)\|(v>>(16-n))` |
 | Boolean mix | `(b&c)\|((~b)&d)` | 16-bit: `cpl` both bytes of b; AND/OR per byte in A. Four live words: extras on the stack |
 | Q8.8 mul | `(u16*u16)>>8` → u16 | 16×16→**32** then **byte slide** `>>8` (L←H←E←D, D=0). Not `l_mult`, not `sra hl` |
@@ -503,14 +586,14 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | Circular byte/item queue | `w += size`; wrap at `tail` | Byte cursor HL or DE; add item size. Unsigned `>= tail` via DSUB **C**. Copy payload with `_memcpy` or a counted `ld a,(de)` / `ld (hl),a` / `inc` loop |
 | Address-ordered free list | split/coalesce blocks | Word pointers. Compare addresses **unsigned** (C). `size_t` is 16-bit |
 | `malloc` / `free` / `memcpy` / `strlen` / `strcpy` / `strcmp` / `qsort` | hosted libc **call** | Bind the preprocessed `PUBLIC`. If the source **writes** the loop (`while (*p)`), emit the byte-walk — do not replace it with a library call |
-| Function pointer | `(*fp)(args)` / `qsort(..., cmp)` | Push args then `ld hl,_fn` / call-through-HL (`jp (hl)` / library trampoline). No IX vtable |
-| Pointer table dispatch | `ops[k & 7](a, b)` | `k&7`; `add hl,hl` (pointer scale); base + DE; `ld hl,(de)`; push args; `jp (hl)` / trampoline. Same stride as `int ops[]` |
+| Function pointer | `(*fp)(args)` / `qsort(..., cmp)` | SMALLC push args left-to-right, then a **fake return address**, then `jp (hl)`. Callee `ret` pops only that address; SP is then at the last-pushed arg — `pop bc` once per arg word. Recompute frame offsets after the trampoline. Worked listing: **Sequences**. No IX vtable |
+| Pointer table dispatch | `ops[k & 7](a, b)` | `k&7`; `add hl,hl` (pointer scale); base + DE; `ld hl,(de)`; push args; `jp (hl)` / trampoline. Same stride as `int ops[]`. Fetch `ld de,table` **clobbers DE** — park a register-homed index first |
 | Opaque callback loop | `acc = f(acc, i)` | **Every** home dies across `call`. Acc, i, n, f on the stack; reload each iter |
-| Dense `switch` VM | `op = prog[pc++]; switch(op)` | Table of addresses, `jp (hl)`. Operand stack `stk[++sp]`: word cursor DE, `sp` in BC (`inc bc` / `dec bc` with scale). Parallel arrays `code[pc]`,`a1[pc]`: three bases or one insn stride |
-| Stationary `p->a` / `p->b` | many fields, p does not move | **No IX.** Park p in DE (or stack). Each field: `ld hl,off` / `add hl,de` / `ex de,hl` / `ld hl,(de)` — or `ld de,hl+off` from a parked copy of p in HL. Do not reload p from BSS per field |
-| Array of structs walk | `s += a[i].x+a[i].y; a[i].z = s` | Element cursor **DE**, stride `sizeof` in **BC**. Fields at +0,+2,+4 via `ld hl,(de)` / `inc de`×2 or `ld de,hl+off`. Step DE by sizeof once per element |
+| Dense `switch` VM | `op = prog[pc++]; switch(op)` | Table of addresses in `rodata_compiler` (`defw op_…`) + `jp (hl)`, explicit default for out-of-range. Operand stack `stk[++sp]`: word cursor DE, `sp` in BC (`inc bc` / `dec bc` with **byte** scale — `inc` is +1). The fetch (`ld de,table; add hl,de; ld a,(hl)`) **clobbers DE**: park the register-homed index around the fetch, or keep it on the frame. State live roles at the top of the routine; never reuse BC as both stack-index and ALU |
+| Stationary `p->a` / `p->b` | many fields, p does not move | **No IX.** Park p in DE (or one `push de` at entry). Each field: `ld hl,off` / `add hl,de` / `ex de,hl` / `ld hl,(de)` / `pop de` to restore p — or `ld de,hl+off` from a parked copy of p in HL. **Max 1 reload of p per iteration.** Do not reload p from BSS per field. A `ld de,sp+*` for the counter must not steal DE=p — park p first |
+| Array of structs walk | `s += a[i].x+a[i].y; a[i].z = s` | Element cursor **DE**, stride `sizeof` in **BC**. `struct pt { int x,y,z; }` → **stride 6**: fields +0,+2,+4 only; `ld hl,6` / `add hl,de` once per element. Checksum fold `& 0xffff` is free on 16-bit add. Copy-paste: **Sequences** |
 | Singly-linked chase | `while (p) { s+=p->val; p=p->next; }` | p in DE. Load `val` first, load `next` last, `or` for NULL. Write pass: `ld hl,(de)` / `inc hl` / `ld (de),hl` then chase |
-| Deep recursion | N-queens / qsort_rec | Automatics **stack-only** (col, row, lo, hi, i). File-scope `board[]` is BSS. `if (d<0) d=-d`: DSUB then K, negate (`sub hl,hl` / `sub hl,bc`). Fnptr compare: spill the partition state |
+| Deep recursion | N-queens / qsort_rec | Automatics **stack-only** (col, row, lo, hi, i). File-scope `board[]` is BSS. Header **Slots** after every call (Comments). `if (d<0) d=-d`: DSUB then `jp k` / `cpl; cpl; inc hl` with HL=d only. After call 1’s arg-clean, re-read call 2’s args from the **restored** frame. Worked `_safe` / `_place`: **Sequences** |
 | Frame-resident array | `int loc[16]; … loc[k]` | Allocate on SP (`ld hl,-n` / `add hl,sp` / `ld sp,hl`). Base `ld de,sp+*`. Dynamic k: `add hl,hl` / `add hl,de` / `ex de,hl` / `ld hl,(de)`. **No** `add hl,ix` |
 | Address-taken local | `f(&v)` / `f(&t[i])` | Real stack slot. Reload v and the array after the call. Cannot keep v in BC across `call` |
 | `T m[R][C]` parameter | decays to `T (*)[C]` | Row is pointer + `i * C * sizeof(T)`. Inner j walks a row cursor |
@@ -590,6 +673,323 @@ If several fields, copy p to the stack once and form each `ld de,hl+off` from a 
 
 **Dense switch** (opcode in A, 0…n): `add a,a` / `ld h,0` / `ld l,a` / add table base / `ld e,(hl+)` / `ld d,(hl)` / `ex de,hl` / `jp (hl)`. Tiny n: `cp` chain.
 
+**8-bit logical `>> n` — `rra`×n is not it.** `rra` is rotate-through-carry.
+`c=0x91` then four bare `rra` yields `0x29`, not `0x09`.
+
+```asm
+; n≤4: rotate left into the low bits, then mask
+    rlca
+    rlca
+    rlca
+    rlca
+    and 0x0F            ; (1<<(8-n))-1 for n=4
+; or clear C before every rra
+    and a
+    rra
+    and a
+    rra
+; 16-bit logical >>n: H=0 then sra hl; or sra hl + ld a,$7f / and h
+```
+
+**`sub hl,bc` polarity.** C sets when **HL < BC** (unsigned borrow). K sets
+when signed HL < BC. For `i < n` tested as `n−i` (HL=n, BC=i):
+
+```asm
+    sub hl,bc           ; C => n < i; Z => n == i
+    jp  c,done
+    jp  z,done
+    ; body: n−i strictly positive
+```
+
+`jp c,body` here is inverted (runs when `n<i`). Check the C comparison,
+not the comment.
+
+**Boolean-of-equality** (`Assert` / `int eq = (a==b)`):
+
+```asm
+    sub hl,bc
+    jp  z,eq1
+    ld  hl,0
+    jp  eqdone
+
+eq1:
+    ld  hl,1
+
+eqdone:
+```
+
+Do not `ld h,0; ld l,a` on a leftover A.
+
+**CRC-16 CCITT (poly `0x1021`, MSB out) — fixed map.** Acc **HL**, cursor
+**DE**, end **BC**. Do not push crc per byte. Size bar **156 B**.
+
+```asm
+; crc ^= *data++ << 8; then 8× (acc<<1) ^ 0x1021 if old msb
+    ld  a,(de+)
+    xor h
+    ld  h,a
+    ld  a,h
+    or  a
+    jp  p,nox
+    add hl,hl
+    ld  a,l
+    xor 0x21
+    ld  l,a
+    ld  a,h
+    xor 0x10
+    ld  h,a
+    jp  nxt
+
+nox:
+    add hl,hl
+
+nxt:
+```
+
+End test: park crc, `ld hl,end; sub hl,bc` with cursor moved to BC, or
+keep cursor in DE and end in BC via `ex` — **unsigned** C/Z. One label
+scheme for the 8 bits.
+
+**CRC-32 poly `0xEDB88320` xor order** (after logical `>>1`, C = old bit 0):
+
+```asm
+    jp  nc,nox
+    ld  a,d
+    xor 0xED
+    ld  d,a
+    ld  a,e
+    xor 0xB8
+    ld  e,a
+    ld  a,h
+    xor 0x83
+    ld  h,a
+    ld  a,l
+    xor 0x20
+    ld  l,a
+
+nox:
+```
+
+**Array-of-struct stride 6** (`struct pt { int x, y, z; }`; `s += p->x +
+p->y + p->z; p->z = s`):
+
+```asm
+; DE = &arr[i], HL = s  (s parked if DE is needed as cursor)
+    ld  hl,(de)         ; x at +0
+    inc de
+    inc de
+    ld  bc,hl
+    ld  hl,(de)         ; y at +2
+    add hl,bc
+    inc de
+    inc de
+    ld  bc,hl
+    ld  hl,(de)         ; z at +4
+    add hl,bc           ; s  (& 0xffff free)
+    ld  (de),hl         ; z = s
+    inc de
+    inc de              ; DE += 6 from start of z, i.e. next element
+```
+
+Prefer `ld hl,6 / add hl,de` from a parked copy of the element base if
+the field stores need DE restored.
+
+**Indirect SMALLC call** `(*fp)(a, b)`:
+
+```asm
+    ld  hl,(a_slot)
+    push hl             ; arg1 (left first)
+    ld  hl,(b_slot)
+    push hl             ; arg2
+    ld  hl,fp_ret
+    push hl             ; fake return — callee ret pops only this
+    ld  hl,(fp)
+    jp  (hl)
+
+fp_ret:
+    pop bc              ; discard arg2
+    pop bc              ; discard arg1
+    ; HL = return. Recompute every ld de,sp+N from this SP.
+```
+
+**Counted loop that must accept n=0:**
+
+```asm
+loop:
+    ld  a,h
+    or  l
+    jp  z,done          ; test before decrement
+    ; body
+    dec hl
+    jp  loop
+```
+
+`dec hl; jp z,done` runs n−1 times and wraps when n=0.
+
+### N-queens — slot map after every call
+
+`safe(int col, int row)` / `place(int col)`. Automatics stack-only.
+`board[]` / `solutions` BSS. One global label scheme. After `call`,
+reload **only** from the documented slots.
+
+```asm
+; _safe — can a queen sit at (col, row)?
+; C: int safe(int col, int row)
+; Inputs:  [sp+0]=ret, [sp+2]=row, [sp+4]=col
+; Outputs: HL = 0/1
+; Uses:    BC = i; HL/DE bus; board[] BSS
+; Slots:   entry [0]=ret [2]=row [4]=col
+;          after push i: [0]=i [2]=ret [4]=row [6]=col
+
+_safe:
+    ld  bc,0            ; i = 0
+
+sloop:
+    ld  de,sp+4
+    ld  hl,(de)         ; col
+    sub hl,bc           ; col - i  (unsigned bound; i>=0)
+    jp  z,sok
+    jp  c,sok
+    push bc             ; park i. Slots: [0]=i [2]=ret [4]=row [6]=col
+    ld  hl,bc
+    add hl,hl
+    ld  de,_board
+    add hl,de
+    ex  de,hl
+    ld  hl,(de)         ; ri
+    ld  bc,hl
+    ld  de,sp+4
+    ld  hl,(de)         ; row
+    sub hl,bc           ; row - ri
+    jp  z,sno_i
+    jp  k,sneg
+    jp  spos
+
+sneg:
+    ld  a,l
+    cpl
+    ld  l,a
+    ld  a,h
+    cpl
+    ld  h,a
+    inc hl              ; d = -(row-ri)
+
+spos:
+    push hl             ; park d. Slots: [0]=d [2]=i [4]=ret [6]=row [8]=col
+    ld  de,sp+8
+    ld  hl,(de)         ; col
+    push hl             ; park col. Slots: [0]=col [2]=d [4]=i …
+    ld  de,sp+4
+    ld  hl,(de)         ; i
+    ld  bc,hl
+    pop hl              ; col. Slots: [0]=d [2]=i …
+    sub hl,bc           ; col - i
+    ld  bc,hl
+    ld  de,sp+0
+    ld  hl,(de)         ; d
+    sub hl,bc           ; d - (col-i); Z => diagonal
+    jp  z,sno_d
+    pop hl              ; d
+    pop hl              ; i → HL
+    inc hl
+    ld  bc,hl
+    jp  sloop
+
+sno_i:
+    pop bc              ; i
+    ld  hl,0
+    ret
+
+sno_d:
+    pop hl              ; d
+    pop hl              ; i
+    ld  hl,0
+    ret
+
+sok:
+    ld  hl,1
+    ret
+
+; _place — recurse columns
+; C: void place(int col)
+; Inputs:  [sp+0]=ret, [sp+2]=col
+; Outputs: void
+; Uses:    row on stack; board[] / solutions BSS
+; Slots:   after `push row`: [0]=row [2]=ret [4]=col
+;          after call _safe + clean 4: same as after push row
+;          after call _place + clean 2: same as after push row
+
+_place:
+    ld  hl,0
+    push hl             ; row. Slots: [0]=row [2]=ret [4]=col
+    ld  de,sp+4
+    ld  hl,(de)         ; col
+    ld  bc,8
+    sub hl,bc
+    jp  z,pinc
+
+prow:
+    ld  de,sp+0
+    ld  hl,(de)         ; row
+    ld  a,l
+    cp  8
+    jp  z,pret
+    ld  de,sp+4
+    ld  hl,(de)         ; col
+    push hl             ; arg1. Slots: [0]=col [2]=row [4]=ret [6]=col
+    ld  de,sp+2
+    ld  hl,(de)         ; row
+    push hl             ; arg2. Slots: [0]=row [2]=col [4]=row [6]=ret [8]=col
+    call _safe
+    ld  a,l
+    or  a               ; Z = (safe==0); add hl,sp keeps Z (V,C only)
+    ld  hl,4
+    add hl,sp
+    ld  sp,hl           ; Slots restored: [0]=row [2]=ret [4]=col
+    jp  z,pnext
+    ld  de,sp+4
+    ld  hl,(de)         ; col — re-derived after call
+    add hl,hl
+    ld  de,_board
+    add hl,de
+    ex  de,hl           ; DE = &board[col]
+    push de             ; park addr. Slots: [0]=addr [2]=row [4]=ret [6]=col
+    ld  de,sp+2
+    ld  hl,(de)         ; row
+    pop de              ; &board[col]
+    ld  (de),hl         ; board[col] = row
+    ld  de,sp+4
+    ld  hl,(de)         ; col
+    inc hl
+    push hl             ; arg1 col+1. Slots: [0]=col+1 [2]=row [4]=ret [6]=col
+    call _place
+    ld  hl,2
+    add hl,sp
+    ld  sp,hl           ; Slots restored: [0]=row [2]=ret [4]=col
+
+pnext:
+    ld  de,sp+0
+    ld  hl,(de)
+    inc hl
+    ld  (de),hl
+    jp  prow
+
+pinc:
+    ld  hl,(_solutions)
+    inc hl
+    ld  (_solutions),hl
+    pop hl              ; row  — park cleanup before ret
+    ret
+
+pret:
+    pop hl              ; row
+    ret
+```
+
+Every exit pops `row` before `ret`. After `call _place`, `col` is
+re-read from `[sp+4]` of the **restored** frame, not from a pre-call
+offset.
+
 ## Optimise from the ISA
 
 Correct C90 + this ABI first. Then **cycles**, then **bytes**. Timings and
@@ -635,6 +1035,12 @@ flag side effects: **`cpu-8085`**.
 | `sub hl,de` as a chip op | DSUB is **HL−BC only** |
 | `adc hl,de` as a chip op | 32-bit carry is `adc a` through the high bytes |
 | `ld (de),r` for r ≠ A, or `ld (de),n` as a chip op | Illegal. Saccharine `ld (de+),a` is fine; `ld (de),l` is a paid `ex` |
+| `ld bc,sp+*` / `ld hl,sp+*` as a chip op | Only `ld de,sp+*` (LDSI). `ld bc,sp+n` is not 8085 |
+| `ld bc,(de)` / `ld (de),bc` | Illegal. Word through DE is `ld hl,(de)` / `ld (de),hl` |
+| `srl` / `srl r` / `srl hl` | Z80 CB. Logical `>>` is `sra hl` + clear H7, or `and a`/`rra` through A |
+| `bit n,r` / `bit n,(hl)` | Z80 CB. Test with `and` mask, `or a` / `jp m`, or `rla` / `jp c` |
+| `rr a` / `rl a` / `rrc a` | 8085 forms are `rra` / `rla` / `rrca` / `rlca` |
+| `cp (bc)` / `cp (de)` / `and (de)` / `add a,(bc)` | ALU memory operand is `(hl)` only |
 | Word cursor in BC | No `ld hl,(bc)` |
 | Z80 `bit n,r` / `ld a,i` / `exx` / IX / IY | Not on 8085 — even if accompanying port asm uses them. IFF is `rim`/`sim`; critical is `di`/`ei` |
 | `jp k` after `dec rp` for `== 0` | K means the pair is **−1** |
@@ -653,22 +1059,49 @@ flag side effects: **`cpu-8085`**.
 
 ## Workflow
 
+0. **8085-support skip probe.** Before emit, try `zcc +test -clib=8085` on
+   the C (or the bench’s classic TIMER line). **Skip** — do not invent
+   libc — if the link fails on `qsort`, `_heap`, `pow`, `malloc`, or
+   float helpers (`dmul`, `cpcmath.inc`). Always skip unless a proven
+   8085 classic TIMER/`+test` path exists:
+   **n-body, spectral-norm, fasta, binary-trees, sorting, dhrystone,
+   coremark**. `coremark10` / `sprintf` / `sscanf` / `gamer_benchmark`
+   have no in-tree +test 8085 recipe. Hybrid links need
+   `PUBLIC _name` on every agent function.
+
+   **zcc-multi float:** `-compiler=multi` does not forward `--math32` /
+   `--math-mbf32` to the per-variant compiles, so those benches build as
+   f48/genmath and fail. Do not score them against a multi “winner”.
+   Detail: **`methodology-measure`**.
+
 1. Read the C as C90. Note widths, signedness, `static`, attributes, float,
    and every comment.
 2. Name the shapes per function (tables above).
 3. Lay out objects: `static` keyword and file-scope → BSS/data; every
    automatic → stack. No extra BSS.
-4. Plan residency (word cursor DE, stride BC, byte acc C, one long DEHL).
-   Write the function header (Comments) from that plan.
+4. Plan residency (word cursor DE, stride BC, byte acc C, one long DEHL;
+   **Hard residency** for call-free loops). Write the function header
+   (Comments) from that plan — **Slots** if the body `call`s.
 5. Lower with extended ops; spill across `call`. Carry and expand comments.
    Blank line after `jp` / `ret` (not after `call`). Saccharine. Inline hot helpers.
-6. Assemble `z88dk-z80asm -m8085 -l`. Rewrite helper calls on the hot path.
+6. **Assemble gate:** `z88dk-z80asm -m8085 -l` must be **clean** (no
+   error, no `call __z80asm__*` on the hot path) **before any ticks
+   claim**. A ticks number without this gate is invalid. Rewrite helper
+   calls on the hot path.
 7. If the source uses TIMER macros, emit `TIMER_START` / `TIMER_STOP` as
    **labels at those source points**, not around CRT.
 
 Comparing this output to another compiler, and feeding lessons back into
 **this** skill, is **`methodology-measure`** (with `compiler-80cc` /
 `compiler-sccz80` / `tool-ticks` as needed). Do not load those to emit.
+
+**Metric taxonomy** (do not mix; **`methodology-measure`**):
+
+| Name | What it is |
+|------|------------|
+| multi TSV `ticks selected` / `bytes selected` | Static per-function sum of the `-compiler=multi` winner (80cc-sp or sccz80). Not whole-image |
+| TIMER | `z88dk-ticks -m8085 … -start TIMER_START -end TIMER_STOP` (CPU flag **before** the binary) |
+| whole-program | `z88dk-ticks -m8085 bin` `Ticks:` line (CRT + harness + printf) |
 
 ## Related
 
