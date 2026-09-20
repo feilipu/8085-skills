@@ -404,6 +404,7 @@ When a C op is not a few native/extended insns, **consider** the 8085 catalogs b
 | `if (x)` / `while (x)` (16) | Test that **writes Z** (`ld a,h` / `or l`) — leftover K is not a truth test |
 | `if (p)` pointer / `== NULL` | `ld a,h` / `or l` |
 | `if (c)` byte | `ld a,c` (or `(hl)`) / `or a` |
+| signed `c < 0` / `c >= 0` (8-bit) | `ld a,c` / `rla` / `jp c` (or `or a` / `jp m`). Do **not** `cp 0` — C after `cp 0` is never set, so `jp c` never takes |
 | `a && b` / `a \|\| b` | Short-circuit; skip the second arm. Side-effecting operands **must not** run when skipped. Each arm writes Z. Cheap int test before a float/call |
 | `x + y` (16) | `add hl,de` or `add hl,bc` |
 | `x - y` / `==` / `!=` (16) | y in BC; `sub hl,bc`; **Z** for `==` / `!=` |
@@ -412,6 +413,7 @@ When a C op is not a few native/extended insns, **consider** the 8085 catalogs b
 | signed `<=` / `>` (16) | same `sub hl,bc`: `<=` is K **or** Z; `>` is NK and NZ |
 | unsigned `<` / `>=` (16) | `sub hl,bc` then **immediately** `jp c` / `jp nc` — **C**, not K |
 | unsigned `<=` / `>` (16) | same: `<=` is C **or** Z; `>` is NC and NZ |
+| unsigned `HL >= N` (N const, **BC live**) | `ld a,l` / `sub lo` / `ld a,h` / `sbc hi` / `jp nc`. N<256: `sbc 0`. Do **not** steal BC for `ld bc,N` / DSUB. Do **not** emit sccz80 `rla/ccf/rra/sbc 128` |
 | `i < n` via `n−i` | HL=n, BC=i; `sub hl,bc`; **C means n<i** (borrow). Continue only on no-borrow AND NZ: `jp c,done; jp z,done; jp body`. Do not `jp c,body` |
 | `*p` / `*p =` (word) | pointer in DE: `ld hl,(de)` / `ld (de),hl` |
 | `*p` / `*p =` (byte) | pointer in HL: `ld a,(hl)` / `ld (hl),a` (or `(de)` if A-only) |
@@ -455,6 +457,7 @@ When a C op is not a few native/extended insns, **consider** the 8085 catalogs b
 | `switch` | compare chain (tiny dense enum) or address table via HL; no `jp (ix)` |
 | `goto` | `jp` (cost assembler `jr` as 3-byte `jp`) |
 | `?:` | compare then two tails; signed test uses K, unsigned uses C |
+| `if (d<0) d=-d` / `abs` 16-bit | DSUB then `jp k` / `cpl` L and H / `inc hl`. **`neg` is Z80 (A only) — not 8085** |
 | `return` 16-bit | HL; never `pop af` for the return address |
 | `return` `char` | L; H dead |
 | `return` `long` | DEHL |
@@ -509,6 +512,7 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | Shape | C | 8085 |
 |-------|---|------|
 | `for (i=lo; i<hi; ++i)` unsigned | `i < SIZE` | Condition is **unsigned** `<` → DSUB **C**, not K. Do not use a signed `jp k` |
+| Nested `for` inner reinit | `for (r) for (k) for (i)` | Each inner counter **and** bound is re-derived at the start of that inner body. A spent inner BC/DE is not the next inner start. Outer `k` that indexes `regs[k]` must be rebuilt every outer step |
 | `for (k=n; k>0; k-=s)` | subtract const | Keep `k` in BC/DE; subtract; test **Z** or unsigned `>` via C |
 | `for (d=min; d<=max; d+=2)` | step 2 | `inc de` / `inc de` (or `inc l` twice if H is known 0 and no wrap) |
 | `for (; n>0; n-=W)` | chunked remainder | `n` in HL; `ld bc,W` / `sub hl,bc`; last iter `if (todo<W) m=todo` |
@@ -555,11 +559,11 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | UTF-8 / UTF-16 unit | `uc << 6 \| (tb & 0x3F)` | 32-bit shift-or; continuation test `tb & 0xC0` is `and 0xC0` / `cp 0x80` |
 | Allocated-bit in `size_t` | `x & (1<<(sizeof(size_t)*8-1))` | MSB of a 16-bit size is **H bit 7**. Test `ld a,h` / `or a` / `jp m` (or `rla` / `jp c`). **No** Z80 `bit 7,h` |
 | Overflow guard | `a > SIZE_MAX - b` | Unsigned 16-bit: `ld hl,MAX` / `sub hl,bc` / `jp c` then compare `a` |
-| Bit-serial feedback, MSB out | `acc ^= *p++;` then 8× `(acc & msb) ? (acc<<1)^K : (acc<<1)` | **CRC-16 map (fixed):** acc **HL**, byte cursor **DE**, end **BC**. Do not push crc per byte. XOR poly `0x1021` as `ld a,l; xor 0x21; ld l,a` / `ld a,h; xor 0x10; ld h,a`. Quality bar vs 80cc-sp: **156 B** for `_crc16_ccitt`. 8-bit: acc in **A** (park in C across the pointer inc), `add a,a` / `jp nc` / `xor K`. Pointer vs `end`: unsigned `sub hl,bc` with end in BC |
+| Bit-serial feedback, MSB out | `acc ^= *p++;` then 8× `(acc & msb) ? (acc<<1)^K : (acc<<1)` | **CRC-16 map (fixed):** acc **HL**, byte cursor **DE**, end **BC**. Do not push crc per byte. XOR poly `0x1021` as `ld a,l; xor 0x21; ld l,a` / `ld a,h; xor 0x10; ld h,a`. Quality bar vs 80cc-sp: **156 B** for `_crc16_ccitt`. 8-bit: acc in **A** (park in C across the pointer inc), `add a,a` / `jp nc` / `xor K`. **Unroll all 8 bit-steps** (no `dec b` inner loop). Pointer vs `end`: unsigned `sub hl,bc` with end in BC |
 | Bit-serial feedback, LSB out | `acc ^= *p++;` then 8× `(acc & 1) ? (acc>>1)^K : (acc>>1)` | Acc in **DEHL**. XOR the byte into L. Logical `>>1` (Sequences). If C (old bit 0) XOR poly **`0xEDB88320` in D,E,H,L order**: `xor 0xED` → D, `0xB8` → E, `0x83` → H, `0x20` → L. Final `^ ~0UL` is `cpl` on D, E, H, L |
 | 16-bit rotate | `(a<<5)\|(a>>11)` | Park in BC; `add hl,hl`×5; OR with logical `B>>3` into L. General: `(v<<n)\|(v>>(16-n))` |
 | Boolean mix | `(b&c)\|((~b)&d)` | 16-bit: `cpl` both bytes of b; AND/OR per byte in A. Four live words: extras on the stack |
-| Q8.8 mul | `(u16*u16)>>8` → u16 | 16×16→**32** then **byte slide** `>>8` (L←H←E←D, D=0). Not `l_mult`, not `sra hl` |
+| Q8.8 mul | `(u16*u16)>>8` → u16 | 16×16→**32** then **byte slide** `>>8` (L←H←E←D, D=0). Not `l_mult` (16×16→16), not four `l_mult` partials — `l_mult_ulong` is in `8085.lst`. Not `sra hl` |
 | Sign-extend `char`→`int` | `int x = sc;` | `ld a,l` / `add a,a` / `sbc a,a` / `ld h,a` |
 | Zero-extend `unsigned char`→`int` | `int x = uc;` | `ld h,0`. Promotes to **signed** `int` (the sum can go negative) |
 | Sign-extend `int`→`long` | `(long)i` / `(unsigned long)(long)i` | HL as-is; `ld a,h` / `add a,a` / `sbc a,a` / `ld d,a` / `ld e,a` |
@@ -593,7 +597,7 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | Stationary `p->a` / `p->b` | many fields, p does not move | **No IX.** Park p in DE (or one `push de` at entry). Each field: `ld hl,off` / `add hl,de` / `ex de,hl` / `ld hl,(de)` / `pop de` to restore p — or `ld de,hl+off` from a parked copy of p in HL. **Max 1 reload of p per iteration.** Do not reload p from BSS per field. A `ld de,sp+*` for the counter must not steal DE=p — park p first |
 | Array of structs walk | `s += a[i].x+a[i].y; a[i].z = s` | Element cursor **DE**, stride `sizeof` in **BC**. `struct pt { int x,y,z; }` → **stride 6**: fields +0,+2,+4 only; `ld hl,6` / `add hl,de` once per element. Checksum fold `& 0xffff` is free on 16-bit add. Copy-paste: **Sequences** |
 | Singly-linked chase | `while (p) { s+=p->val; p=p->next; }` | p in DE. Load `val` first, load `next` last, `or` for NULL. Write pass: `ld hl,(de)` / `inc hl` / `ld (de),hl` then chase |
-| Deep recursion | N-queens / qsort_rec | Automatics **stack-only** (col, row, lo, hi, i). File-scope `board[]` is BSS. Header **Slots** after every call (Comments). `if (d<0) d=-d`: DSUB then `jp k` / `cpl; cpl; inc hl` with HL=d only. After call 1’s arg-clean, re-read call 2’s args from the **restored** frame. Worked `_safe` / `_place`: **Sequences** |
+| Deep recursion | N-queens / qsort_rec | Automatics **stack-only** (col, row, lo, hi, i). File-scope `board[]` is BSS. Header **Slots** after every call (Comments). `if (d<0) d=-d`: DSUB then `jp k` / `cpl; cpl; inc hl` with HL=d only. After call 1’s arg-clean, re-read call 2’s args from the **restored** frame. Worked `_safe` / `_place`: **Sequences**. A stub `_place` that does not recurse is not this shape — do not claim ticks |
 | Frame-resident array | `int loc[16]; … loc[k]` | Allocate on SP (`ld hl,-n` / `add hl,sp` / `ld sp,hl`). Base `ld de,sp+*`. Dynamic k: `add hl,hl` / `add hl,de` / `ex de,hl` / `ld hl,(de)`. **No** `add hl,ix` |
 | Address-taken local | `f(&v)` / `f(&t[i])` | Real stack slot. Reload v and the array after the call. Cannot keep v in BC across `call` |
 | `T m[R][C]` parameter | decays to `T (*)[C]` | Row is pointer + `i * C * sizeof(T)`. Inner j walks a row cursor |
@@ -1040,6 +1044,8 @@ flag side effects: **`cpu-8085`**.
 | `srl` / `srl r` / `srl hl` | Z80 CB. Logical `>>` is `sra hl` + clear H7, or `and a`/`rra` through A |
 | `bit n,r` / `bit n,(hl)` | Z80 CB. Test with `and` mask, `or a` / `jp m`, or `rla` / `jp c` |
 | `rr a` / `rl a` / `rrc a` | 8085 forms are `rra` / `rla` / `rrca` / `rlca` |
+| `rra r` / `rra d` / `rra e` (r ≠ A) | `rra` is **A only**. Multi-byte `>>` is `ld a,r` / `rra` / `ld r,a` |
+| `neg` | Z80 `ED 44`. 8-bit negate is `cpl` / `inc a`; 16-bit is `cpl` both / `inc hl` |
 | `cp (bc)` / `cp (de)` / `and (de)` / `add a,(bc)` | ALU memory operand is `(hl)` only |
 | Word cursor in BC | No `ld hl,(bc)` |
 | Z80 `bit n,r` / `ld a,i` / `exx` / IX / IY | Not on 8085 — even if accompanying port asm uses them. IFF is `rim`/`sim`; critical is `di`/`ei` |
@@ -1065,9 +1071,9 @@ flag side effects: **`cpu-8085`**.
    float helpers (`dmul`, `cpcmath.inc`). Always skip unless a proven
    8085 classic TIMER/`+test` path exists:
    **n-body, spectral-norm, fasta, binary-trees, sorting, dhrystone,
-   coremark**. `coremark10` / `sprintf` / `sscanf` / `gamer_benchmark`
-   have no in-tree +test 8085 recipe. Hybrid links need
-   `PUBLIC _name` on every agent function.
+   coremark, mandelbrot, whetstone, paranoia**. `coremark10` /
+   `sprintf` / `sscanf` / `gamer_benchmark` have no in-tree +test 8085
+   recipe. Hybrid links need `PUBLIC _name` on every agent function.
 
    **zcc-multi float:** `-compiler=multi` does not forward `--math32` /
    `--math-mbf32` to the per-variant compiles, so those benches build as
@@ -1090,6 +1096,10 @@ flag side effects: **`cpu-8085`**.
    calls on the hot path.
 7. If the source uses TIMER macros, emit `TIMER_START` / `TIMER_STOP` as
    **labels at those source points**, not around CRT.
+8. **Checksum before ticks.** Host-compute the `Assert` value. A hang at
+   `rim` (opcode `0x20`) in `+test` is Assert → longjmp → SYSCALL, not
+   an infinite kernel. A stub that returns a constant, or whole-program
+   ticks ≪ multi by >10× **and** Assert fail, is not a result.
 
 Comparing this output to another compiler, and feeding lessons back into
 **this** skill, is **`methodology-measure`** (with `compiler-80cc` /

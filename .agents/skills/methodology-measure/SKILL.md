@@ -320,6 +320,11 @@ Integer `sscanf` is `test_scanf*.bin` (no `%f`). `test/suites/string` is `str*` 
 
 If a ticks run **never hits `TIMER_STOP`**, suspect infinite loops (classic:
   clobbering the loop counter register that is also used as `B` in `BC`).
+If PC sits on **`rim` (opcode `0x20`)** in a `+test` image: `Assert`
+failed and longjmp hit SYSCALL. That is a **wrong checksum**, not a
+loop clobber. Host-compute the expected value before claiming ticks.
+A stub hot function, or whole-program ticks ≪ multi by >10× **and**
+Assert fail, is not a result.
 
 ---
 
@@ -530,7 +535,7 @@ tree; they are **not** part of the product PR.
 
 When the agent already emitted 8085 asm with **`compiler-ac85`**, compare quality here. ABI, residency, and C→ISA lowering stay in **`compiler-ac85`**. Invoke flags stay in **`compiler-80cc`** / **`compiler-sccz80`**.
 
-**8085-support skip probe (Workflow step 0 in `compiler-ac85`).** Before emit or a multi score, try `zcc +test -clib=8085` on the C. Skip — do not invent libc — if the link fails on `qsort`, `_heap`, `pow`, `malloc`, or float helpers. Always skip unless a proven 8085 classic TIMER/`+test` path exists: **n-body, spectral-norm, fasta, binary-trees, sorting, dhrystone, coremark**. `coremark10` / `sprintf` / `sscanf` / `gamer_benchmark` have no in-tree +test 8085 recipe.
+**8085-support skip probe (Workflow step 0 in `compiler-ac85`).** Before emit or a multi score, try `zcc +test -clib=8085` on the C. Skip — do not invent libc — if the link fails on `qsort`, `_heap`, `pow`, `malloc`, or float helpers. Always skip unless a proven 8085 classic TIMER/`+test` path exists: **n-body, spectral-norm, fasta, binary-trees, sorting, dhrystone, coremark, mandelbrot, whetstone, paranoia**. `coremark10` / `sprintf` / `sscanf` / `gamer_benchmark` have no in-tree +test 8085 recipe.
 
 **zcc-multi float:** `-compiler=multi` does not forward `--math32` / `--math-mbf32` to the per-variant compiles (`src/zcc/zcc.c` `multi_compiler_args`). Those benches build as f48/genmath and fail (`cpcmath.inc` / `dmul`). The multi “winner” for `mandelbrot`, `n-body`, `whetstone`, `spectral-norm`, `fasta`, `pi` is unstable. Exclude them from numeric comparison; this is a zcc-multi limitation, not an agent or 80cc issue.
 

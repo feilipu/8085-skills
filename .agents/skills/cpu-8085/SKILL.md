@@ -454,7 +454,8 @@ the `$7f` form above.
 **Logical multi-byte >>** (24/32-bit etc.): chain **`rra` through A**
 across bytes — **first** byte with C cleared (`xor a` / `or a` on the
 MSB), later bytes consume the previous C. Not Z80 `srl`. Not a bare
-`rra`×n on one register.
+`rra`×n on one register. There is **no** `rra d` / `rra e` — `rra` is A
+only (`ld a,d` / `rra` / `ld d,a`).
 
 **32-bit <<** (value in DEHL):
 
@@ -488,6 +489,8 @@ Push a scratch word; **`ex (sp),hl`** swaps with it when AF/BC/DE/HL are full (1
 | Stack + DE for second long | `exx`, IX/IY as default temps |
 | `sub hl,bc` | Assuming `sbc hl,de` exists |
 | `and a` / `rra`, `sra hl` + clear H7, `rlca`×n + mask | Z80 `srl r` / `srl hl` / `bit n,r` (CB prefix; `CB` on 8085 is `rst v`) |
+| `ld a,r` / `rra` / `ld r,a` | `rra r` (r ≠ A). `rra` is A only |
+| `cpl` / `inc a` (8-bit) or `cpl` both / `inc hl` (16-bit) | Z80 `neg` (`ED 44`) — not 8085 |
 | `ld de,sp+*` | `ld bc,sp+*` / `ld hl,sp+*` (LDSI is DE only) |
 | `ld hl,(de)` / `ld (de),hl` | `ld bc,(de)` / `ld (de),bc` |
 | Open-coded extended-op sequences | Assuming Z80 library mul/div cores |
