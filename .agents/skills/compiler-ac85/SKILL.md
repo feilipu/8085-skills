@@ -254,13 +254,15 @@ names. Park a live home that shares that pair first. Load the value you
 must keep **last**. After `ex de,hl`, the old HL is gone.
 
 **Offset invariant:** `slot now at sp+(N + 2*active_pushes)`. After
-every `push`, every earlier `ld de,sp+N` increases by 2. After every
-`pop`, it decreases by 2. Recompute for the current depth. A `pop`
+every `push`, every later `ld de,sp+N` increases by 2. After every
+`pop`, it decreases by 2. Recompute for the **current** depth. A `pop`
 inside a swap/RMW block invalidates the next store’s offset — re-derive
-that store from the post-pop SP. Never issue two `ld de,sp+N` for the
-same logical slot with a `push`/`pop` between them — LDSI resolves SP
-at execution, so the second read hits the wrong word. Read the pointer
-once and keep it in a pair, or `call l_glong` (Helpers).
+that store from the post-pop SP. LDSI resolves SP at execution: a second
+`ld de,sp+N` of the same object after a `push`/`pop` uses the new N, not
+the first. A 4-byte slot is two words (low at N, high at N+2 at that
+depth); if a `push` sits between the two reads, the high-word offset is
+N+4. Open-code both halves. Do not reuse the first N. Worked sequence:
+**Sequences**.
 
 Any `call` to a library helper (`l_mult`, `l_div`, `l_mult_ulong`, …)
 **clobbers BC** (and A F DE HL). Never hold a live home in BC across a
@@ -396,13 +398,13 @@ When a C op is not a few native/extended insns, **consider** the 8085 catalogs b
 
 **Open-code; do not call** on 8085: `l_eq`/`l_ne`/`l_lt`/`l_le`/`l_gt`/`l_ge`/`l_ult`/`l_ule`/`l_ugt`/`l_uge` (`sub hl,bc` + K/C/Z); `l_rlde` (native `rl de`); `l_gint*sp` (`ld de,sp+*` / `ld hl,(de)`); `l_pint_*` (`ld (de),hl`); `l_asr` / `l_asr_u` when the count is 1 or a small constant (`sra hl` / logical `>>`). Do not bind `l_setix` / `l_setiy` / f48.
 
-**4-byte / far loads — `call l_glong` / `l_glong2sp`.** Default for a
-`long` / IEEE32 stack slot or a pointed-to long. `l_glong`: HL = pointer,
-DEHL out (DE high, HL low). `l_glong2sp`: same fetch, push onto the
-stack. `EXTERN` from `libsrc/l/sccz80/8080.lst` (pulled in by `8085.lst`).
-Do not open-code the two halves of one 4-byte slot with two `ld de,sp+*`
-(Offset invariant). Walking a DWORD cursor in DE still uses two
-`ld hl,(de)` + `inc de`×2.
+**4-byte / far loads — open-code.** Two `ld de,sp+*` / `ld hl,(de)` at
+the current depth (Offset invariant). Walking a DWORD cursor in DE:
+two `ld hl,(de)` + `inc de`×2. **Last resort:** `call l_glong` (HL =
+pointer, DEHL out) or `l_glong2sp` (same fetch, push onto the stack)
+when the pointer is already in HL and a helper is cheaper than parking
+for two LHLX. `EXTERN` from `libsrc/l/sccz80/8080.lst` (pulled in by
+`8085.lst`).
 
 16×16→16 is `l_mult`. 16×16→32 is **`l_mult_ulong`** (DEHL = DE×HL), not `l_mult`. Combined `/` and `%`: one `l_div` / `l_div_u` / `l_long_div*`.
 
@@ -456,7 +458,7 @@ Do not open-code the two halves of one 4-byte slot with two `ld de,sp+*`
 | `x / 2` (non-neg) | `sra hl` |
 | signed `v / (1<<n)` | C rounds **toward zero**. `sra hl` rounds toward −∞. If v<0, add `(1<<n)-1` then `sra` n times. `%` = v − quot×(1<<n) |
 | LE `*(WORD *)p` | pointer in DE: `ld hl,(de)` — 8085 is little-endian, unaligned is legal |
-| LE `*(DWORD *)p` | Pointer in HL: `call l_glong` → DEHL. Pointer in DE: `ex de,hl` then `l_glong`. Walking a DWORD cursor: `ld hl,(de)` (low) / park / `inc de`×2 / `ld hl,(de)` (high) / `ex de,hl` / restore low. Not a byte-shift chain |
+| LE `*(DWORD *)p` | Pointer in DE: `ld hl,(de)` (low) / park / `inc de`×2 / `ld hl,(de)` (high) / `ex de,hl` / restore low. Pointer in HL: `ex de,hl` then the same. Stack slot: two `ld de,sp+N` at the **current** depth (Offset invariant). `l_glong` last resort (Helpers). Not a byte-shift chain |
 | `*p++ = (BYTE)val; val >>= 8` | `ld (de),a` with A=L; `inc de`; then **logical** byte slide L←H←E←D, D=0 (unsigned). Not `sra hl` |
 | Range `c >= 'A' && c <= 'Z'` | `ld a,c` / `cp 'A'` / `jp c` / `cp 'Z'+1` / `jp nc` — 8-bit, unsigned |
 | `float /` | restoring divide (`library-math32`), not inv×mul |
@@ -722,17 +724,22 @@ not the comment.
 **Memory-operand 16-bit subtract** — subtrahend first, minuend second
 (`cpu-8085` §4). Two-LHLD as A then B computes `B − A`.
 
-**Read a 4-byte stack slot / pointed-to long** (`l_glong`, sccz80-exact):
+**Read a 4-byte stack slot** — open-code both words; recount after every
+`push`/`pop` (Offset invariant). Slot at `sp+8`/`sp+10` (low/high):
 
 ```asm
     ld  de,sp+8
-    ex  de,hl
-    call l_glong       ; DEHL = *(long *)(sp+8)
+    ld  hl,(de)         ; low
+    push hl             ; SP − 2; high is now at sp+12
+    ld  de,sp+12        ; not sp+10 — the push added 2
+    ld  hl,(de)         ; high
+    ex  de,hl           ; DE = high
+    pop hl              ; HL = low  → DEHL
 ```
 
-Push that long onto the stack: same pointer setup, `call l_glong2sp`.
-Do not read the two words with two `ld de,sp+*` that straddle a `push`
-(Offset invariant).
+Reusing the first N after the `push` reads the low word twice. Last
+resort when the pointer is already in HL: `call l_glong` / `l_glong2sp`
+(Helpers).
 
 **Boolean-of-equality** (`Assert` / `int eq = (a==b)`):
 
@@ -1036,7 +1043,8 @@ flag side effects: **`cpu-8085`**.
    it. Park first. Word cursor in DE; stride in BC.
 4. **Calls kill parking.** Helpers and unknown C functions clobber
    **A F BC DE HL**. Reload from slots. Do not call `l_gint*sp` —
-   open-code `ld de,sp+*`. 4-byte / far: `call l_glong` / `l_glong2sp`.
+   open-code `ld de,sp+*` (4-byte: two loads at the current depth;
+   Offset invariant). `l_glong` / `l_glong2sp` last resort (Helpers).
 5. **Inline vs helper.** Hot path: inline a short body. Otherwise `call`
    from **Helpers**. Measure with **`tool-ticks`** (`-m8085` before the
    binary) when unsure.
