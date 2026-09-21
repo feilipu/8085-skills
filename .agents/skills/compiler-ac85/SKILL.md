@@ -257,7 +257,10 @@ must keep **last**. After `ex de,hl`, the old HL is gone.
 every `push`, every earlier `ld de,sp+N` increases by 2. After every
 `pop`, it decreases by 2. Recompute for the current depth. A `pop`
 inside a swap/RMW block invalidates the next store’s offset — re-derive
-that store from the post-pop SP.
+that store from the post-pop SP. Never issue two `ld de,sp+N` for the
+same logical slot with a `push`/`pop` between them — LDSI resolves SP
+at execution, so the second read hits the wrong word. Read the pointer
+once and keep it in a pair, or `call l_glong` (Helpers).
 
 Any `call` to a library helper (`l_mult`, `l_div`, `l_mult_ulong`, …)
 **clobbers BC** (and A F DE HL). Never hold a live home in BC across a
@@ -393,6 +396,14 @@ When a C op is not a few native/extended insns, **consider** the 8085 catalogs b
 
 **Open-code; do not call** on 8085: `l_eq`/`l_ne`/`l_lt`/`l_le`/`l_gt`/`l_ge`/`l_ult`/`l_ule`/`l_ugt`/`l_uge` (`sub hl,bc` + K/C/Z); `l_rlde` (native `rl de`); `l_gint*sp` (`ld de,sp+*` / `ld hl,(de)`); `l_pint_*` (`ld (de),hl`); `l_asr` / `l_asr_u` when the count is 1 or a small constant (`sra hl` / logical `>>`). Do not bind `l_setix` / `l_setiy` / f48.
 
+**4-byte / far loads — `call l_glong` / `l_glong2sp`.** Default for a
+`long` / IEEE32 stack slot or a pointed-to long. `l_glong`: HL = pointer,
+DEHL out (DE high, HL low). `l_glong2sp`: same fetch, push onto the
+stack. `EXTERN` from `libsrc/l/sccz80/8080.lst` (pulled in by `8085.lst`).
+Do not open-code the two halves of one 4-byte slot with two `ld de,sp+*`
+(Offset invariant). Walking a DWORD cursor in DE still uses two
+`ld hl,(de)` + `inc de`×2.
+
 16×16→16 is `l_mult`. 16×16→32 is **`l_mult_ulong`** (DEHL = DE×HL), not `l_mult`. Combined `/` and `%`: one `l_div` / `l_div_u` / `l_long_div*`.
 
 ## C → 8085 primitives
@@ -407,7 +418,7 @@ When a C op is not a few native/extended insns, **consider** the 8085 catalogs b
 | signed `c < 0` / `c >= 0` (8-bit) | `ld a,c` / `rla` / `jp c` (or `or a` / `jp m`). Do **not** `cp 0` — C after `cp 0` is never set, so `jp c` never takes |
 | `a && b` / `a \|\| b` | Short-circuit; skip the second arm. Side-effecting operands **must not** run when skipped. Each arm writes Z. Cheap int test before a float/call |
 | `x + y` (16) | `add hl,de` or `add hl,bc` |
-| `x - y` / `==` / `!=` (16) | y in BC; `sub hl,bc`; **Z** for `==` / `!=` |
+| `x - y` / `==` / `!=` (16) | y in BC; `sub hl,bc`; **Z** for `==` / `!=`. **Memory operands:** subtrahend first into BC, minuend second into HL (`cpu-8085` §4). Two-LHLD as A then B computes `B − A` |
 | boolean-of-equality `==` → 0/1 | **branch to set 1 / set 0**. `sub hl,bc` / `jp z,eq1` / `ld hl,0` / `jp done` / `eq1: ld hl,1`. Do **not** `ld h,0; ld l,a` on a leftover A |
 | signed `<` / `>=` (16) | `sub hl,bc` then **immediately** `jp k` / `jp nk` |
 | signed `<=` / `>` (16) | same `sub hl,bc`: `<=` is K **or** Z; `>` is NK and NZ |
@@ -445,7 +456,7 @@ When a C op is not a few native/extended insns, **consider** the 8085 catalogs b
 | `x / 2` (non-neg) | `sra hl` |
 | signed `v / (1<<n)` | C rounds **toward zero**. `sra hl` rounds toward −∞. If v<0, add `(1<<n)-1` then `sra` n times. `%` = v − quot×(1<<n) |
 | LE `*(WORD *)p` | pointer in DE: `ld hl,(de)` — 8085 is little-endian, unaligned is legal |
-| LE `*(DWORD *)p` | `ld hl,(de)` (low) / park HL / `inc de`×2 / `ld hl,(de)` (high) / `ex de,hl` / restore low into HL → DEHL. Not a byte-shift chain |
+| LE `*(DWORD *)p` | Pointer in HL: `call l_glong` → DEHL. Pointer in DE: `ex de,hl` then `l_glong`. Walking a DWORD cursor: `ld hl,(de)` (low) / park / `inc de`×2 / `ld hl,(de)` (high) / `ex de,hl` / restore low. Not a byte-shift chain |
 | `*p++ = (BYTE)val; val >>= 8` | `ld (de),a` with A=L; `inc de`; then **logical** byte slide L←H←E←D, D=0 (unsigned). Not `sra hl` |
 | Range `c >= 'A' && c <= 'Z'` | `ld a,c` / `cp 'A'` / `jp c` / `cp 'Z'+1` / `jp nc` — 8-bit, unsigned |
 | `float /` | restoring divide (`library-math32`), not inv×mul |
@@ -594,7 +605,7 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | Pointer table dispatch | `ops[k & 7](a, b)` | `k&7`; `add hl,hl` (pointer scale); base + DE; `ld hl,(de)`; push args; `jp (hl)` / trampoline. Same stride as `int ops[]`. Fetch `ld de,table` **clobbers DE** — park a register-homed index first |
 | Opaque callback loop | `acc = f(acc, i)` | **Every** home dies across `call`. Acc, i, n, f on the stack; reload each iter |
 | Dense `switch` VM | `op = prog[pc++]; switch(op)` | Table of addresses in `rodata_compiler` (`defw op_…`) + `jp (hl)`, explicit default for out-of-range. Operand stack `stk[++sp]`: word cursor DE, `sp` in BC (`inc bc` / `dec bc` with **byte** scale — `inc` is +1). The fetch (`ld de,table; add hl,de; ld a,(hl)`) **clobbers DE**: park the register-homed index around the fetch, or keep it on the frame. State live roles at the top of the routine; never reuse BC as both stack-index and ALU |
-| Stationary `p->a` / `p->b` | many fields, p does not move | **No IX.** Park p in DE (or one `push de` at entry). Each field: `ld hl,off` / `add hl,de` / `ex de,hl` / `ld hl,(de)` / `pop de` to restore p — or `ld de,hl+off` from a parked copy of p in HL. **Max 1 reload of p per iteration.** Do not reload p from BSS per field. A `ld de,sp+*` for the counter must not steal DE=p — park p first |
+| Stationary `p->a` / `p->b` | many fields, p does not move | **No IX.** Park p in BC (`ex de,hl` / `ld bc,hl`). Each field: `ld hl,bc` / `ld de,hl+off` / `ld hl,(de)`. `push de` / `pop de` only when BC is already a live home. **Max 1 reload of p per iteration.** Do not reload p from BSS per field. A `ld de,sp+*` for the counter must not steal DE=p — park p first |
 | Array of structs walk | `s += a[i].x+a[i].y; a[i].z = s` | Element cursor **DE**, stride `sizeof` in **BC**. `struct pt { int x,y,z; }` → **stride 6**: fields +0,+2,+4 only; `ld hl,6` / `add hl,de` once per element. Checksum fold `& 0xffff` is free on 16-bit add. Copy-paste: **Sequences** |
 | Singly-linked chase | `while (p) { s+=p->val; p=p->next; }` | p in DE. Load `val` first, load `next` last, `or` for NULL. Write pass: `ld hl,(de)` / `inc hl` / `ld (de),hl` then chase |
 | Deep recursion | N-queens / qsort_rec | Automatics **stack-only** (col, row, lo, hi, i). File-scope `board[]` is BSS. Header **Slots** after every call (Comments). `if (d<0) d=-d`: DSUB then `jp k` / `cpl; cpl; inc hl` with HL=d only. After call 1’s arg-clean, re-read call 2’s args from the **restored** frame. Worked `_safe` / `_place`: **Sequences**. A stub `_place` that does not recurse is not this shape — do not claim ticks |
@@ -662,18 +673,18 @@ the prototype says so.
     ld  h,a
 ```
 
-**Stationary struct** (p in DE, field at +4):
+**Stationary struct** (p in DE, field at +4). Park p in BC; LDHI leaves HL = p:
 
 ```asm
-    push de
-    ld  hl,4
-    add hl,de
-    ex  de,hl
-    ld  hl,(de)
-    pop de             ; p restored
+    ex  de,hl          ; HL = p
+    ld  bc,hl          ; park p
+    ld  de,hl+4        ; DE = p+4, HL still p
+    ld  hl,(de)        ; field
 ```
 
-If several fields, copy p to the stack once and form each `ld de,hl+off` from a parked HL = p.
+Repeated fields: p stays in BC; each access is `ld hl,bc` / `ld de,hl+*` /
+`ld hl,(de)`. If BC is already a live home, `push de` around the field
+access and add 2 to later `ld de,sp+N`.
 
 **Dense switch** (opcode in A, 0…n): `add a,a` / `ld h,0` / `ld l,a` / add table base / `ld e,(hl+)` / `ld d,(hl)` / `ex de,hl` / `jp (hl)`. Tiny n: `cp` chain.
 
@@ -707,6 +718,21 @@ when signed HL < BC. For `i < n` tested as `n−i` (HL=n, BC=i):
 
 `jp c,body` here is inverted (runs when `n<i`). Check the C comparison,
 not the comment.
+
+**Memory-operand 16-bit subtract** — subtrahend first, minuend second
+(`cpu-8085` §4). Two-LHLD as A then B computes `B − A`.
+
+**Read a 4-byte stack slot / pointed-to long** (`l_glong`, sccz80-exact):
+
+```asm
+    ld  de,sp+8
+    ex  de,hl
+    call l_glong       ; DEHL = *(long *)(sp+8)
+```
+
+Push that long onto the stack: same pointer setup, `call l_glong2sp`.
+Do not read the two words with two `ld de,sp+*` that straddle a `push`
+(Offset invariant).
 
 **Boolean-of-equality** (`Assert` / `int eq = (a==b)`):
 
@@ -1010,7 +1036,7 @@ flag side effects: **`cpu-8085`**.
    it. Park first. Word cursor in DE; stride in BC.
 4. **Calls kill parking.** Helpers and unknown C functions clobber
    **A F BC DE HL**. Reload from slots. Do not call `l_gint*sp` —
-   open-code `ld de,sp+*`.
+   open-code `ld de,sp+*`. 4-byte / far: `call l_glong` / `l_glong2sp`.
 5. **Inline vs helper.** Hot path: inline a short body. Otherwise `call`
    from **Helpers**. Measure with **`tool-ticks`** (`-m8085` before the
    binary) when unsure.
@@ -1026,6 +1052,11 @@ flag side effects: **`cpu-8085`**.
    synthetics (`ld (de),l`, `call __z80asm__*`).
 9. **Listing check.** Assemble `-m8085 -l`. If the hot path shows
    `call __z80asm__*`, rewrite to a native, extended, or saccharine form.
+10. **Float op order is ABI when matching another compiler bit-for-bit.**
+    IEEE32 `+ - * /` are not associative; printed digits flip if the
+    expression tree is reassociated. Reorder only integer and
+    exact-constant transforms. Keep named float kernels as real
+    functions when the reference compiler does.
 
 ### Do not emit
 
@@ -1093,9 +1124,15 @@ flag side effects: **`cpu-8085`**.
 6. **Assemble gate:** `z88dk-z80asm -m8085 -l` must be **clean** (no
    error, no `call __z80asm__*` on the hot path) **before any ticks
    claim**. A ticks number without this gate is invalid. Rewrite helper
-   calls on the hot path.
+   calls on the hot path. If printf conversions render wrong (`%7ld`
+   mangled, `%lu` as a literal `u`), check `CLIB_OPT_PRINTF` before
+   touching asm — CLI `-pragma-define:CLIB_OPT_PRINTF=…` overrides
+   source `#pragma printf`. `%lu` is unsupported in the +test 8085
+   classic default.
 7. If the source uses TIMER macros, emit `TIMER_START` / `TIMER_STOP` as
-   **labels at those source points**, not around CRT.
+   **labels at those source points**, not around CRT. `%12.4e` prints
+   IEEE32 `0.0` as blank — dump each float half as `%ld` (raw words)
+   before treating formatted output, or a ticks delta, as evidence.
 8. **Checksum before ticks.** Host-compute the `Assert` value. A hang at
    `rim` (opcode `0x20`) in `+test` is Assert → longjmp → SYSCALL, not
    an infinite kernel. A stub that returns a constant, or whole-program

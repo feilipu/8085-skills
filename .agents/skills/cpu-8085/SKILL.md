@@ -336,6 +336,18 @@ Without alternate registers, a second long value lives **on the stack**, not in 
     jp  z,equal        ; or jp nz,not_equal
 ```
 
+**Memory operands.** No `ld rp,(nn)` for BC/DE — only `ld hl,(nn)` (LHLD). The second-loaded value is the one subtracted *from*. Load the **subtrahend first**, park it in BC, load the **minuend second** into HL:
+
+```asm
+; HL = A − B, both 16-bit memory operands
+    ld  hl,(B)         ; subtrahend first
+    ld  bc,hl
+    ld  hl,(A)         ; minuend second
+    sub hl,bc          ; HL = A − B
+```
+
+Loading A then B yields `B − A`. If BC is live, park the subtrahend in DE (`ex de,hl`) and subtract through A (`sub` / `sbc`).
+
 Signed order (**K**, immediately). `<=` is K **or** Z; `>` is NK and NZ:
 
 ```asm
@@ -542,7 +554,7 @@ Assembler must be **8085-aware** (these encodings are not Z80 prefixes).
 ## Pitfalls
 
 1. **`pop af` never for function return** — F bit 3 is hardwired 0, so AF cannot hold a correct return address. Use BC/DE/HL for the return word. **`pop af` is OK only to discard** intermediate stack values when the popped data is unused. AF is also not a clean 16-bit temp (`$FFFF` → `$FFF7`).
-2. **`sub hl,bc` has no borrow-in** — multi-precision use A + `sbc`.
+2. **`sub hl,bc` has no borrow-in** — multi-precision use A + `sbc`. Memory operands: subtrahend first, minuend second (§4).
 3. **K ≠ Z on 16-bit dec** — pre-dec + `jp k`/`jp nk`.
 4. **Offsets on `ld de,sp+*` / `ld de,hl+*` are unsigned.**
 5. **`rst v`** only if **0040h** is defined.
@@ -551,7 +563,7 @@ Assembler must be **8085-aware** (these encodings are not Z80 prefixes).
 8. **Forward overlapping stack copy corrupts** — see multi-word frame rebuild above.
 9. **No copt pass on library asm** — hand-written `libsrc/**` is assembled as-is. Remove copy-backs (`ld r,a` then `ld a,r`) and other dead moves yourself. Match the **target file’s** whitespace (spaces vs tabs); do not reformat to sccz80/copt tab style. **Before finalising** any hand-coded math16/math32 (or similar) edit: scan for copt-equivalent wins (`ex de,hl` / `ld bc,hl` instead of push/pop transfers; drop `ld a,e` after `ld e,a`; pair zeros → `ld hl,0`; etc.) and run the matching suite. Do **not** use `xor a` for `ld a,0` when CF must survive. Full checklist: **`tool-copt`** and **`methodology-measure`** (“Before finalising hand-coded library work”).
 10. **Illegal chip `(de)` stores** — only `a` / `hl`. Saccharine `ld (de+),a` is fine. `ld (de),l` assembling is a **paid** `ex de,hl` expansion, not a chip op.
-11. **`__CPU_INTEL__` is set for 8085.** 9-common `IF __CPU_INTEL__` takes the 8080-portable path and will not emit `rl de` / `sra hl`. Do not “fix” those files with `#if __CPU_8085__`. Fork into `7-8085/` and list the module first (`l/util/8085.lst`, `l/sccz80/8085.lst`). Existing forks: `l_lsl_dehl`, `l_asr_dehl`, `l_long_asr`, `l_small_atoul` / `htoul` / `otoul` / `utoa`, `l_gint1sp`…`l_gint8sp`. **New 8085-only code** does not `call l_gint*sp` — open-code `ld de,sp+*` / `ld hl,(de)` (`compiler-ac85`).
+11. **`__CPU_INTEL__` is set for 8085.** 9-common `IF __CPU_INTEL__` takes the 8080-portable path and will not emit `rl de` / `sra hl`. Do not “fix” those files with `#if __CPU_8085__`. Fork into `7-8085/` and list the module first (`l/util/8085.lst`, `l/sccz80/8085.lst`). Existing forks: `l_lsl_dehl`, `l_asr_dehl`, `l_long_asr`, `l_small_atoul` / `htoul` / `otoul` / `utoa`, `l_gint1sp`…`l_gint8sp`. **New 8085-only code** does not `call l_gint*sp` — open-code `ld de,sp+*` / `ld hl,(de)`. 4-byte / far: `l_glong` / `l_glong2sp` (`compiler-ac85`).
 12. **No `srl`, no `bit n,r`, no `ld bc,sp+*`, no `ld bc,(de)`.** `CB` is `rst v`. LDSI is **DE** only. Word through DE is HL. `inc`/`dec` on a pair are **±1 byte**, not ±element.
 
 ## Preference order (when writing 8085-only code)
