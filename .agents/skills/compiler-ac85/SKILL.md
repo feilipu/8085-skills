@@ -463,7 +463,7 @@ for two LHLX. `EXTERN` from `libsrc/l/sccz80/8080.lst` (pulled in by
 | Range `c >= 'A' && c <= 'Z'` | `ld a,c` / `cp 'A'` / `jp c` / `cp 'Z'+1` / `jp nc` — 8-bit, unsigned |
 | `float /` | restoring divide (`library-math32`), not inv×mul |
 | `1.0 / x` | still restoring `/`, not `fsinv` |
-| Counted 16-bit loop | `cpu-8085` trip-count identity **or** `dec bc` / `inc b` / `inc c`. **Not** C `n--` → `jp nk` |
+| Counted 16-bit loop | `cpu-8085` §5. Flat `ld bc,N-1` / `jp nk`, or nested `dec bc` / `inc b` / `inc c`. Both are valid. Do not mix them. **Not** C `n--` → `jp nk` |
 | Counted loop that **may run 0 times** | Test the counter **before** decrement (`ld a,h; or l; jp z,done` then body then `dec hl`). `dec; jp z` runs n−1 times and underflows when n=0 |
 | 8-bit counted loop | `dec b` / `jp nz` (opcode `10` is `sra hl`) |
 | C `n == 0` / post-dec to zero | A test that **writes Z** |
@@ -477,7 +477,8 @@ for two LHLX. `EXTERN` from `libsrc/l/sccz80/8080.lst` (pulled in by
 | `printf` / varargs | `ld a,N` then `call` |
 
 **K is two different flags in two different ops.** After `dec bc` (and
-other 16-bit `dec`), K means the pair became **−1**, not 0. After
+other 16-bit `dec`), K sets on the rollover from 0 to `$FFFF`, not when
+the result is 0. After
 `sub hl,bc`, **K encodes signed ordering** (`jp k` = signed HL < BC)
 and **C encodes unsigned borrow** (`jp c` = unsigned HL < BC). Pick by
 the C type, not by habit. `lo<=hi` with a possibly negative `hi` is
@@ -1088,7 +1089,7 @@ flag side effects: **`cpu-8085`**.
 | `cp (bc)` / `cp (de)` / `and (de)` / `add a,(bc)` | ALU memory operand is `(hl)` only |
 | Word cursor in BC | No `ld hl,(bc)` |
 | Z80 `bit n,r` / `ld a,i` / `exx` / IX / IY | Not on 8085 — even if accompanying port asm uses them. IFF is `rim`/`sim`; critical is `di`/`ei` |
-| `jp k` after `dec rp` for `== 0` | K means the pair is **−1** |
+| `jp k` after `dec rp` for `== 0` | K sets on rollover 0→`$FFFF`, not at 0 (`cpu-8085` §5) |
 | `jp k` for unsigned `<` | Unsigned order is **C** after `sub hl,bc` |
 | `pop af` as return address or 16-bit temp | F bit 3 hardwired 0 |
 | BSS for an automatic, temp, or spill | Static storage only if C wrote `static` or the object is file-scope |
