@@ -232,7 +232,7 @@ _foo:
     ret
 ```
 
-Zilog, lowercase, four-space indent. No Intel names (`LXI`, `DSUB`, `LDSI`).
+Zilog, lowercase, four-space indent. No Intel names; the Intel→Zilog map is **`cpu-8085`**.
 Blank line after a PC break: **Listing layout**. Prefer **saccharine** (below).
 
 ## Registers — what the ISA actually gives C
@@ -308,7 +308,7 @@ must keep **last**. After `ex de,hl`, the old HL is gone.
 every `push`, every later `ld de,sp+N` increases by 2. After every
 `pop`, it decreases by 2. Recompute for the **current** depth. A `pop`
 inside a swap/RMW block invalidates the next store’s offset — re-derive
-that store from the post-pop SP. LDSI resolves SP at execution: a second
+that store from the post-pop SP. `ld de,sp+*` resolves SP at execution: a second
 `ld de,sp+N` of the same object after a `push`/`pop` uses the new N, not
 the first. A 4-byte slot is two words (low at N, high at N+2 at that
 depth); if a `push` sits between the two reads, the high-word offset is
@@ -331,10 +331,10 @@ Prefer **`cpu-8085`** sequences:
 | Need | Sequence | Why it wins |
 |------|----------|-------------|
 | Pointer to a slot, HL free | `ld de,sp+n` | 2 bytes, 10 cycles, no flags |
-| Word load/store | `ld hl,(de)` / `ld (de),hl` | Native LHLX/SHLX |
+| Word load/store | `ld hl,(de)` / `ld (de),hl` | Native (de) word traffic |
 | Byte load/store | `ld a,(de)` / `ld (de),a` | Only legal `(de)` byte forms |
 | HL = SP+n, DE free | `ld de,sp+n` / `ex de,hl` | Cheaper than `ld hl,nn` / `add hl,sp` when n is 0…255 |
-| Offset > 255 | `ld hl,nn` / `add hl,sp` | `*` on LDSI/LDHI is **unsigned 8-bit** |
+| Offset > 255 | `ld hl,nn` / `add hl,sp` | `*` on `ld de,sp+*` / `ld de,hl+*` is **unsigned 8-bit** |
 
 If DE is a live home, `push de` around the SP op and add 2 to the offset.
 `&local` is **rematerialisable**: a pure function of the slot offset and
@@ -441,7 +441,7 @@ less:
 
 ## Helpers (library vs inline)
 
-When a C op is not a few native/extended insns, **consider** the 8085 catalogs below (integer helpers, integer math, IEEE32, half float). **Hot path: inline** a short body instead of calling (`*10` shift-add, DSUB compare, `ld de,sp+*`, `rl de`, `sra hl`, `<<8` byte move). One-shot or bulky work (general mul/div, 32-bit mul, float) **`call`** the catalog name and `EXTERN` it. Every `call` clobbers **A F BC DE HL**. **The cost of a helper is the `call`, not the operation:** a `call` forces the result through a slot, kills every resident home, and ends call-free residency. In a hot loop a longer inline body that keeps values resident beats a shorter helper behind a `call`; one-shot work is the opposite — `call` it.
+When a C op is not a few native/extended insns, **consider** the 8085 catalogs below (integer helpers, integer math, IEEE32, half float). **Hot path: inline** a short body instead of calling (`*10` shift-add, `sub hl,bc` compare, `ld de,sp+*`, `rl de`, `sra hl`, `<<8` byte move). One-shot or bulky work (general mul/div, 32-bit mul, float) **`call`** the catalog name and `EXTERN` it. Every `call` clobbers **A F BC DE HL**. **The cost of a helper is the `call`, not the operation:** a `call` forces the result through a slot, kills every resident home, and ends call-free residency. In a hot loop a longer inline body that keeps values resident beats a shorter helper behind a `call`; one-shot work is the opposite — `call` it.
 
 | Catalog | Use |
 |---------|-----|
@@ -457,7 +457,7 @@ the current depth (Offset invariant). Walking a DWORD cursor in DE:
 two `ld hl,(de)` + `inc de`×2. **Last resort:** `call l_glong` (HL =
 pointer, DEHL out) or `l_glong2sp` (same fetch, push onto the stack)
 when the pointer is already in HL and a helper is cheaper than parking
-for two LHLX. `EXTERN` from `libsrc/l/sccz80/8080.lst` (pulled in by
+for two `ld hl,(de)`. `EXTERN` from `libsrc/l/sccz80/8080.lst` (pulled in by
 `8085.lst`).
 
 16×16→16 is `l_mult`. 16×16→32 is **`l_mult_ulong`** (DEHL = DE×HL), not `l_mult`. Combined `/` and `%`: one `l_div` / `l_div_u` / `l_long_div*`.
@@ -475,13 +475,13 @@ for two LHLX. `EXTERN` from `libsrc/l/sccz80/8080.lst` (pulled in by
 | signed `c < 0` / `c >= 0` (8-bit) | `ld a,c` / `rla` / `jp c` (or `or a` / `jp m`). Do **not** `cp 0` — C after `cp 0` is never set, so `jp c` never takes |
 | `a && b` / `a \|\| b` | Short-circuit; skip the second arm. Side-effecting operands **must not** run when skipped. Each arm writes Z. Cheap int test before a float/call |
 | `x + y` (16) | `add hl,de` or `add hl,bc` |
-| `x - y` / `==` / `!=` (16) | y in BC; `sub hl,bc`; **Z** for `==` / `!=`. **Memory operands:** subtrahend first into BC, minuend second into HL (`cpu-8085` §4). Two-LHLD as A then B computes `B − A` |
+| `x - y` / `==` / `!=` (16) | y in BC; `sub hl,bc`; **Z** for `==` / `!=`. **Memory operands:** subtrahend first into BC, minuend second into HL (`cpu-8085` §4). Two `ld hl,(mem)` as A then B computes `B − A` |
 | boolean-of-equality `==` → 0/1 | **branch to set 1 / set 0**. `sub hl,bc` / `jp z,eq1` / `ld hl,0` / `jp done` / `eq1: ld hl,1`. Do **not** `ld h,0; ld l,a` on a leftover A |
 | signed `<` / `>=` (16) | `sub hl,bc` then **immediately** `jp k` / `jp nk` |
 | signed `<=` / `>` (16) | same `sub hl,bc`: `<=` is K **or** Z; `>` is NK and NZ |
 | unsigned `<` / `>=` (16) | `sub hl,bc` then **immediately** `jp c` / `jp nc` — **C**, not K |
 | unsigned `<=` / `>` (16) | same: `<=` is C **or** Z; `>` is NC and NZ |
-| unsigned `HL >= N` (N const, **BC live**) | `ld a,l` / `sub lo` / `ld a,h` / `sbc hi` / `jp nc`. N<256: `sbc 0`. Do **not** steal BC for `ld bc,N` / DSUB. Do **not** emit sccz80 `rla/ccf/rra/sbc 128` |
+| unsigned `HL >= N` (N const, **BC live**) | `ld a,l` / `sub lo` / `ld a,h` / `sbc hi` / `jp nc`. N<256: `sbc 0`. Do **not** steal BC for `ld bc,N` / `sub hl,bc`. Do **not** emit sccz80 `rla/ccf/rra/sbc 128` |
 | `i < n` via `n−i` | HL=n, BC=i; `sub hl,bc`; **C means n<i** (borrow). Continue only on no-borrow AND NZ: `jp c,done; jp z,done; jp body`. Do not `jp c,body` |
 | `*p` / `*p =` (word) | pointer in DE: `ld hl,(de)` / `ld (de),hl` |
 | `*p` / `*p =` (byte) | pointer in HL: `ld a,(hl)` / `ld (hl),a` (or `(de)` if A-only) |
@@ -526,7 +526,7 @@ for two LHLX. `EXTERN` from `libsrc/l/sccz80/8080.lst` (pulled in by
 | `switch` | compare chain (tiny dense enum) or address table via HL; no `jp (ix)` |
 | `goto` | `jp` (cost assembler `jr` as 3-byte `jp`) |
 | `?:` | compare then two tails; signed test uses K, unsigned uses C |
-| `if (d<0) d=-d` / `abs` 16-bit | DSUB then `jp k` / `cpl` L and H / `inc hl`. **`neg` is Z80 (A only) — not 8085** |
+| `if (d<0) d=-d` / `abs` 16-bit | `sub hl,bc` then `jp k` / `cpl` L and H / `inc hl`. **`neg` is Z80 (A only) — not 8085** |
 | `return` 16-bit | HL; never `pop af` for the return address |
 | `return` `char` | L; H dead |
 | `return` `long` | DEHL |
@@ -573,7 +573,7 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | 5-point stencil | `out[i][j]=in[i][j]+N+S+E+W` | W compile-time: `i*W` is shift-add (40=`*32+*8`). Keep a **row** word cursor; N/S = ±`W` words (`ld bc,±2*W` / `add hl,bc`); E/W = ±2 bytes. No `l_mult` on the hot path. Double-buffer: swap two pointers (DE + stack) |
 | Flattened 2D | `((int *)m)[i]` | Linear word walk after the cast. Param `T m[R][C]` decays to `T (*)[C]`; row stride `C*sizeof(T)` |
 | Open-address probe | `idx = (idx + 1) & (N-1)` | N = `1<<k`: `inc hl` / `ld a,l` / `and` low mask / if N>256 also mask H. Do not `l_div` |
-| Coprime wrap | `idx += STEP; if (idx >= N) idx -= N` | Unsigned `>=` (DSUB **C**); then `sub hl,bc` with N in BC. Not `% N` |
+| Coprime wrap | `idx += STEP; if (idx >= N) idx -= N` | Unsigned `>=` (**C**); then `sub hl,bc` with N in BC. Not `% N` |
 | djb2 / `h*33+c` | `h = (h<<5)+h+k[i]` | Park h in DE; `add hl,hl`×5; `add hl,de`; add the byte (`ld d,0` / `ld e,c` / `add hl,de`). Mask `& 0xffff` is free on 16-bit |
 | 16-bit LCG | `seed = seed * A + C` | `l_mult` or shift-add for A; `add hl,bc`; wrap is free. File-scope seed is BSS |
 
@@ -581,7 +581,7 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 
 | Shape | C | 8085 |
 |-------|---|------|
-| `for (i=lo; i<hi; ++i)` unsigned | `i < SIZE` | Condition is **unsigned** `<` → DSUB **C**, not K. Do not use a signed `jp k` |
+| `for (i=lo; i<hi; ++i)` unsigned | `i < SIZE` | Condition is **unsigned** `<` → **C**, not K. Do not use a signed `jp k` |
 | Nested `for` inner reinit | `for (r) for (k) for (i)` | Each inner counter **and** bound is re-derived at the start of that inner body. A spent inner BC/DE is not the next inner start. Outer `k` that indexes `regs[k]` must be rebuilt every outer step |
 | `for (k=n; k>0; k-=s)` | subtract const | Keep `k` in BC/DE; subtract; test **Z** or unsigned `>` via C |
 | `for (d=min; d<=max; d+=2)` | step 2 | `inc de` / `inc de` (or `inc l` twice if H is known 0 and no wrap) |
@@ -597,7 +597,7 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | `do { … } while (n)` fill | counted body | Count in B/C; `dec b` / `jp nz`. Body often a byte store through HL |
 | `do { … } while (0)` | statement macro | Not a loop — emit the body once |
 | `if (1)` / `if (0)` / constant `?:` | compile-time condition | Emit the taken arm only — no branch, no park for the untaken side |
-| `while (p < end)` pointers | byte/word walk vs sentinel | **Unsigned** `<` on the addresses: DSUB **C**. End in BC, p in HL/DE |
+| `while (p < end)` pointers | byte/word walk vs sentinel | **Unsigned** `<` on the addresses: **C**. End in BC, p in HL/DE |
 | Nested run-length | inner `while` equal bytes, cap 255 | Outer in-cursor **HL**, out-cursor **DE**, run in **C**. Inner: `ld a,(hl)` / `cp v` / `inc hl` / `inc c` / stop on Z of `inc c` (wrap 255→0) or mismatch |
 | Binary search | `mid=(lo+hi)>>1`; `lo=mid+1` / `hi=mid-1` | **Mandatory homes (call-free):** `lo` **BC**, `hi` **DE** (or reverse), `mid` in HL once. Reload lo/hi from the stack **only after `call`**. Non-neg mid: `add hl,de` / `sra hl`. `lo<=hi` is signed K **or** Z (`hi` may be −1). Indexed load: `add hl,hl` + table base → DE / `ld hl,(de)` — park `hi` first if that load needs DE. Masked `tab[mid]&m`: AND per byte in A (`and` is 8-bit). Four `ld de,sp+*` per probe = failed residency |
 | Insertion shift-up | `while (j>=0 && v[j]>key) v[j+1]=v[j]` | Short-circuit: signed `j<0` (S/K) **before** the load. Word copy: DE at `&v[j]`, `ld hl,(de)` / `inc de`×2 / `ld (de),hl`, then step DE back 4 |
@@ -605,7 +605,7 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | `while (*a && *a==*b)` | strcmp | DE and HL; `ld a,(de)` / `cp (hl)` / `jp nz`; `or a` / `jp z` equal; then **`inc de` / `inc hl`** (or `ld a,(de+)` only on the continue path). Return `(unsigned char)*a - (unsigned char)*b` in HL |
 | `while ((*d++=*s++))` | strcpy | DE=src, HL=dst; `ld a,(de+)` / `ld (hl+),a` / `or a` / `jp nz` |
 | Range ladder | `if (c<32)… else if (c<48)…` | Keep the byte in **A**. Successive `cp` / `jp nc` — do not reload. Lexer class: ws / alpha / digit / other as 8-bit unsigned ranges (`'_'` is a `cp`) |
-| Clamp / saturate | `if (v>hi) v=hi; if (v<lo) v=lo` | Signed: DSUB then K; assign the bound. Same variable on both arms — one home |
+| Clamp / saturate | `if (v>hi) v=hi; if (v<lo) v=lo` | Signed: `sub hl,bc` then K; assign the bound. Same variable on both arms — one home |
 | Side-effect `&&` / `\|\|` | `a < b && probe(c) > d` | Jump over `probe` when `a<b` is false. Flattening to arithmetic is a miscompile |
 
 ### Widths, bits, 32-bit
@@ -655,13 +655,13 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | Recursive tree | `node->left==NULL` | SMALLC push / `call` / caller pop. Word at DE, `ld hl,(de)` / `or`. `2*item` is `add hl,hl`. Locals on **stack** even if other TUs used `-DSTATIC` |
 | Intrusive circular list | `n->prev=p; n->next=p->next; p->next->prev=n; p->next=n` | `next`/`prev` are **word** cursors in DE. Four stores. Self-end: `end->next = end`. Do not linear-search an array |
 | Nested chase | `p->next->value` | Load `next` into DE first, then field. One live struct pointer at a time |
-| Sorted insert | `item <= key` on unsigned ticks | **Unsigned** compare. 16-bit: DSUB **C**/Z. 32-bit: high then low through A. Equality sentinel first if the C tests it |
+| Sorted insert | `item <= key` on unsigned ticks | **Unsigned** compare. 16-bit: `sub hl,bc` **C**/Z. 32-bit: high then low through A. Equality sentinel first if the C tests it |
 | Width-1 count / status | `uint8_t n++;` / `int8_t ok` | **8-bit**: `inc c` / `dec c`, not 16-bit `inc hl`. Return **L only; H dead.** Signed 8-bit compare in A (`cp` / `jp m` / `or a`) |
 | Owner back-pointer | `void *owner` | Stored pointer (2 bytes). Load DE; do not synthesise `offsetof` unless the source does |
 | `* const` pointer param | `T * const p` | Pointer value is const, not the object. Still a stack/DE home |
 | `volatile` members | list/queue/lock fields | Reload after every sequence point and after `call`. Parking in BC/DE is a miscompile across a yield or ISR |
 | Array of lists | `lists[prio]` | Small unsigned index: `add hl,hl` (pointer scale) + base. Empty walk is 8-bit `dec c` / `jp nz` if the count is 8-bit |
-| Circular byte/item queue | `w += size`; wrap at `tail` | Byte cursor HL or DE; add item size. Unsigned `>= tail` via DSUB **C**. Copy payload with `_memcpy` or a counted `ld a,(de)` / `ld (hl),a` / `inc` loop |
+| Circular byte/item queue | `w += size`; wrap at `tail` | Byte cursor HL or DE; add item size. Unsigned `>= tail` via **C**. Copy payload with `_memcpy` or a counted `ld a,(de)` / `ld (hl),a` / `inc` loop |
 | Address-ordered free list | split/coalesce blocks | Word pointers. Compare addresses **unsigned** (C). `size_t` is 16-bit |
 | `malloc` / `free` / `memcpy` / `strlen` / `strcpy` / `strcmp` / `qsort` | hosted libc **call** | Bind the preprocessed `PUBLIC`. If the source **writes** the loop (`while (*p)`), emit the byte-walk — do not replace it with a library call |
 | Function pointer | `(*fp)(args)` / `qsort(..., cmp)` | SMALLC push args left-to-right, then a **fake return address**, then `jp (hl)`. Callee `ret` pops only that address; SP is then at the last-pushed arg — `pop bc` once per arg word. Recompute frame offsets after the trampoline. Worked listing: **Sequences**. No IX vtable |
@@ -671,7 +671,7 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | Stationary `p->a` / `p->b` | many fields, p does not move | **No IX.** Park p in BC (`ex de,hl` / `ld bc,hl`). Each field: `ld hl,bc` / `ld de,hl+off` / `ld hl,(de)`. `push de` / `pop de` only when BC is already a live home. **Max 1 reload of p per iteration.** Do not reload p from BSS per field. A `ld de,sp+*` for the counter must not steal DE=p — park p first |
 | Array of structs walk | `s += a[i].x+a[i].y; a[i].z = s` | Element cursor **DE**, stride `sizeof` in **BC**. `struct pt { int x,y,z; }` → **stride 6**: fields +0,+2,+4 only; `ld hl,6` / `add hl,de` once per element. Checksum fold `& 0xffff` is free on 16-bit add. Copy-paste: **Sequences** |
 | Singly-linked chase | `while (p) { s+=p->val; p=p->next; }` | p in DE. Load `val` first, load `next` last, `or` for NULL. Write pass: `ld hl,(de)` / `inc hl` / `ld (de),hl` then chase |
-| Deep recursion | N-queens / qsort_rec | Automatics **stack-only** (col, row, lo, hi, i). File-scope `board[]` is BSS. Header **Slots** after every call (Comments). `if (d<0) d=-d`: DSUB then `jp k` / `cpl; cpl; inc hl` with HL=d only. After call 1’s arg-clean, re-read call 2’s args from the **restored** frame. Worked `_safe` / `_place`: **Sequences**. A stub `_place` that does not recurse is not this shape — do not claim ticks |
+| Deep recursion | N-queens / qsort_rec | Automatics **stack-only** (col, row, lo, hi, i). File-scope `board[]` is BSS. Header **Slots** after every call (Comments). `if (d<0) d=-d`: `sub hl,bc` then `jp k` / `cpl; cpl; inc hl` with HL=d only. After call 1’s arg-clean, re-read call 2’s args from the **restored** frame. Worked `_safe` / `_place`: **Sequences**. A stub `_place` that does not recurse is not this shape — do not claim ticks |
 | Frame-resident array | `int loc[16]; … loc[k]` | Allocate on SP (`ld hl,-n` / `add hl,sp` / `ld sp,hl`). Base `ld de,sp+*`. Dynamic k: `add hl,hl` / `add hl,de` / `ex de,hl` / `ld hl,(de)`. **No** `add hl,ix` |
 | Address-taken local | `f(&v)` / `f(&t[i])` | Real stack slot. Reload v and the array after the call. Cannot keep v in BC across `call` |
 | Private local struct, fixed offsets | `struct pt a; a.x=…; a.y=…` | A local struct whose address never escapes can be **field-split**: each scalar field in its own home (BC / DE / C / stack), no struct address emitted. Refuse if a field address is taken, the object is a parameter or `volatile`, a field is dynamically indexed, or a union is written via one member and read via another |
@@ -700,7 +700,7 @@ the prototype says so.
 | `1.0/sqrt(r)` | unless the source writes `invsqrt` | `sqrt` then restoring `/` |
 | Horner / iterate | several live floats | Hoist invariants. Spill the second complex pair; do not pretend `exx` exists |
 | `pow(2, integer)` assigned to integer | `1 << n` | `ld hl,1` / `add hl,hl` `n` times (or 32-bit if width is long). Do not call `pow` for that |
-| Compare `<=` float | library compare | Flags after the call are the helper’s, not K from DSUB |
+| Compare `<=` float | library compare | Flags after the call are the helper’s, not K from `sub hl,bc` |
 | `fabs(a-b) < eps` | tolerance | Library sub; if negative, negate; compare to eps. Do not `==` on IEEE32 vs MBF32 |
 | `static T v[N]` inside a function | local with `static` | BSS/data. Automatic `T v[N]` is stack |
 
@@ -737,7 +737,7 @@ the prototype says so.
     ld  h,a
 ```
 
-**Stationary struct** (p in DE, field at +4). Park p in BC; LDHI leaves HL = p:
+**Stationary struct** (p in DE, field at +4). Park p in BC; `ld de,hl+*` leaves HL = p:
 
 ```asm
     ex  de,hl          ; HL = p
@@ -784,7 +784,7 @@ when signed HL < BC. For `i < n` tested as `n−i` (HL=n, BC=i):
 not the comment.
 
 **Memory-operand 16-bit subtract** — subtrahend first, minuend second
-(`cpu-8085` §4). Two-LHLD as A then B computes `B − A`.
+(`cpu-8085` §4). Two `ld hl,(mem)` as A then B computes `B − A`.
 
 **Read a 4-byte stack slot** — open-code both words; recount after every
 `push`/`pop` (Offset invariant). Slot at `sp+8`/`sp+10` (low/high):
@@ -1137,10 +1137,10 @@ flag side effects: **`cpu-8085`**.
 | Native `djnz` | Opcode `10` = `sra hl` |
 | Native 2-byte `jr` | Opcode `18` = `rl de` |
 | `sbc hl,de` / `sbc hl,bc` as a chip op | Not on 8085; may become a helper `call` |
-| `sub hl,de` as a chip op | DSUB is **HL−BC only** |
+| `sub hl,de` as a chip op | `sub hl,bc` is **HL−BC only** |
 | `adc hl,de` as a chip op | 32-bit carry is `adc a` through the high bytes |
 | `ld (de),r` for r ≠ A, or `ld (de),n` as a chip op | Illegal. Saccharine `ld (de+),a` is fine; `ld (de),l` is a paid `ex` |
-| `ld bc,sp+*` / `ld hl,sp+*` as a chip op | Only `ld de,sp+*` (LDSI). `ld bc,sp+n` is not 8085 |
+| `ld bc,sp+*` / `ld hl,sp+*` as a chip op | Only `ld de,sp+*` (sp-relative) is 8085; `ld bc,sp+n` is not |
 | `ld bc,(de)` / `ld (de),bc` | Illegal. Word through DE is `ld hl,(de)` / `ld (de),hl` |
 | `srl` / `srl r` / `srl hl` | Z80 CB. Logical `>>` is `sra hl` + clear H7, or `and a`/`rra` through A |
 | `bit n,r` / `bit n,(hl)` | Z80 CB. Test with `and` mask, `or a` / `jp m`, or `rla` / `jp c` |
