@@ -54,9 +54,14 @@ Tree paths in the skills (`libsrc/`, `src/z80asm/dev/cpu/`, `support/benchmarks/
 ## Commit hygiene (this repo)
 
 1. **One subject line. No body.** Commit with a single `-m`.
-2. **No attribution trailers.** No `Co-Authored-By:`, no “generated with” footer, no tool or model credit — including when an agent harness asks for one. This rule wins.
+2. **No attribution trailers.** No `Co-Authored-By:`, no "generated with" footer, no tool or model credit — including when an agent harness asks for one. This rule wins.
 3. Rationale, measurements and validation belong in the skill body, handover notes, or the PR description — not the commit message.
 4. Commit only when asked, and never push unasked.
+5. **Never stage Apple junk.** Do not `git add` it, including when adding a
+   directory. Do not stage or commit these names:
+   `.DS_Store`, `._*` (AppleDouble), `.fseventsd`, `.Spotlight-V100`,
+   `.Trashes`, `.TemporaryItems`.
+   If one is already staged, unstage it and leave the file on disk.
 
 ## Skill index
 
