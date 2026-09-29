@@ -110,6 +110,48 @@ cores into a classic 8085 image (`library-classic`). Do not rewrite
 `sizeof` is a compile-time constant. String concatenation of literals is
 one object.
 
+## Aliasing and lifetime — the correctness floor
+
+Correct C outranks every size/cycle win; these rules are the floor.
+
+**An address-taken local is memory everywhere.** Once the C takes `&x` —
+passed to a `call`, stored through a pointer, handed out as `&arr[i]` —
+code that never names `x` can write it. After that call or indirect
+store, **reload** `x` from its slot; do not keep a value obtained earlier
+and do not fold a constant belief across the event
+(`unsigned a=0; bump(&a); return a+x;` must reload `a`). The escape is
+function-wide: an escape in an earlier statement aliases a later one.
+
+**A write through a pointer names no symbol.** `*p = v` (or a `call`
+whose callee can store) can change **anything** reachable, so no value
+derived from memory survives unchanged across it: `t1 = a + x; *p = …;
+t2 = a + x;` recomputes `t2`. `*p = a + x` records nothing about `p`
+itself — the store writes what `p` points at. Contrast the two spellings:
+`a += v` writes `a`'s slot; `*p = v` writes through `p`.
+
+**`volatile` is a contract.** Every access is performed, in order, and a
+volatile store is **never a read-modify-write** (a store must not read the
+old slot), never fused, never elided, never reordered against another
+access.
+
+**A parameter's slot lives in the caller's frame.** Reloading a **stepped**
+pointer parameter after a `call` revives the **original** address — the
+stepped value was never written back to that slot. Either keep the stepped
+pointer in its own stack slot and reload that, or step in registers only
+across call-free stretches.
+
+**A value survives an op only if its register is not in that op's effect
+set.** A `call` clobbers **A F BC DE HL**; a library helper preserves only
+what its listing documents. Spill first when a home must cross its
+clobber — a stale belief miscompiles, it does not deoptimise. A home may
+span an intra-function `jp` to a label whose path never reads it; a
+`call` / `ret` may read any pair (args / DEHL results), so homes die there.
+
+**A store-back is dead only when no later reader depends on the previous
+writer having stored.** Skip a home's store-back only if every later read
+of that slot either writes its own value first or never happens; a reader
+that only reads ("a channel") still needs the store. When in doubt, store.
+
 ## ABI (classic 8085 C)
 
 One convention: **SMALLC** — arguments pushed **left to right**, **caller
@@ -135,7 +177,10 @@ at the **higher** address (pushed first). Do not read arg1 at `[sp+2]`.
 A `long` argument is pushed **high word first, then low** (low at the
 lower address). `f(long a)` → entry **`[sp+2]=lo, [sp+4]=hi`**. The
 DEHL **return** home (DE high, HL low) is not the stack order. `g(int x,
-long a)` → `[sp+2]=a.lo, [sp+4]=a.hi, [sp+6]=x`.
+long a)` → `[sp+2]=a.lo, [sp+4]=a.hi, [sp+6]=x`. Carry a fetched 32-bit
+parameter in **DEHL past the prologue** — do not materialise its slot and
+reload it at first use. Spill it only when a second 32-bit value needs
+DEHL.
 
 `__stdc`: reverse stacked args. `__z88dk_fastcall`: last scalar already in
 HL (or DEHL if 32-bit). `__z88dk_callee`: callee pops (use `pop af` **only**
@@ -152,6 +197,12 @@ to discard a word).
 `xor a`) immediately before `call`. N = argument **words** on the stack.
 A stuffed `&__i64_acc` is not part of N. Non-variadic calls must not assume
 A is live.
+
+**An argument is a terminal consumer** — loaded once, pushed once, read by
+the callee. Materialise it at the push site (`ld hl,(slot)` / `ld hl,_g` /
+`push hl`); do not load it into a parking pair and then transfer before
+pushing. A global read whose only use is that same argument list needs no
+frame slot.
 
 **Libc:** do not lower headers. Bind the **preprocessed** prototype to a
 library `PUBLIC`: `__z88dk_callee` → `call _foo_callee` (callee pops);
@@ -286,6 +337,9 @@ Prefer **`cpu-8085`** sequences:
 | Offset > 255 | `ld hl,nn` / `add hl,sp` | `*` on LDSI/LDHI is **unsigned 8-bit** |
 
 If DE is a live home, `push de` around the SP op and add 2 to the offset.
+`&local` is **rematerialisable**: a pure function of the slot offset and
+the current SP depth. Never give the address itself a slot or a BSS cell —
+rebuild it with `ld de,sp+n` / `ex de,hl` when needed (Offset invariant).
 Function headers (purpose, inputs with this map, outputs, registers): **Comments**.
 
 ```asm
@@ -387,7 +441,7 @@ less:
 
 ## Helpers (library vs inline)
 
-When a C op is not a few native/extended insns, **consider** the 8085 catalogs below (integer helpers, integer math, IEEE32, half float). **Hot path: inline** a short body instead of calling (`*10` shift-add, DSUB compare, `ld de,sp+*`, `rl de`, `sra hl`, `<<8` byte move). One-shot or bulky work (general mul/div, 32-bit mul, float) **`call`** the catalog name and `EXTERN` it. Every `call` clobbers **A F BC DE HL**.
+When a C op is not a few native/extended insns, **consider** the 8085 catalogs below (integer helpers, integer math, IEEE32, half float). **Hot path: inline** a short body instead of calling (`*10` shift-add, DSUB compare, `ld de,sp+*`, `rl de`, `sra hl`, `<<8` byte move). One-shot or bulky work (general mul/div, 32-bit mul, float) **`call`** the catalog name and `EXTERN` it. Every `call` clobbers **A F BC DE HL**. **The cost of a helper is the `call`, not the operation:** a `call` forces the result through a slot, kills every resident home, and ends call-free residency. In a hot loop a longer inline body that keeps values resident beats a shorter helper behind a `call`; one-shot work is the opposite — `call` it.
 
 | Catalog | Use |
 |---------|-----|
@@ -415,6 +469,7 @@ for two LHLX. `EXTERN` from `libsrc/l/sccz80/8080.lst` (pulled in by
 | Automatic (no `static`) | Stack slot; cursor in DE. **Not** BSS |
 | `static` keyword / file-scope | BSS/data as declared. Do not invent extra BSS |
 | `if (x)` / `while (x)` (16) | Test that **writes Z** (`ld a,h` / `or l`) — leftover K is not a truth test |
+| Zero-test a **BC/DE home** | `if (!n)` with n in BC | Test **in place**: `ld a,b` / `or c` (or `ld a,d` / `or e`). Do not ferry the pair through a scratch register or `dec` first |
 | `if (p)` pointer / `== NULL` | `ld a,h` / `or l` |
 | `if (c)` byte | `ld a,c` (or `(hl)`) / `or a` |
 | signed `c < 0` / `c >= 0` (8-bit) | `ld a,c` / `rla` / `jp c` (or `or a` / `jp m`). Do **not** `cp 0` — C after `cp 0` is never set, so `jp c` never takes |
@@ -433,6 +488,7 @@ for two LHLX. `EXTERN` from `libsrc/l/sccz80/8080.lst` (pulled in by
 | `p->field` | Pointer in HL: `ld de,hl+off` (off unsigned 8-bit) then `(de)`. Pointer already in DE: `ld hl,off` / `add hl,de` (or `ex de,hl` first). Off > 255: `ld hl,nn` / `add hl,de` |
 | `p++` (byte / word ptr) | `inc de` / `inc de` twice (or `ld hl,2` / `add hl,de`). **`inc`/`dec` on a pair are ±1 byte, not ±element** |
 | `*p++ = byte` | **`ld (de+),a`** (saccharine). Word: `ld (de),hl` then `inc de` twice |
+| `v[i]++` byte RMW, value unused | `&v[i]` in **HL**: **`inc (hl)`** — one op, no load/store back. Only when the C never reads the updated value. If the old value is used (`tmp = v[i]++`), read it first (`ld a,(hl)` / then the RMW). Word RMW keeps the address in DE: `ld hl,(de)` / `inc hl` / `ld (de),hl` |
 | `s << 1` (16) | `add hl,hl` |
 | `s << n` n const 2…7 | repeated `add hl,hl` |
 | `u << 8` / `u >> 8` unsigned 16 | **byte move**: `ld h,l` / `ld l,0`; `ld l,h` / `ld h,0`. Not eight `add hl,hl` |
@@ -540,6 +596,7 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | `goto L` | labelled loop | `jp L`. Counted `j+=1; if (j<n) goto L` is an 8-bit `inc c` / `ld a,c` / `cp n` / `jp c` (unsigned) |
 | `do { … } while (n)` fill | counted body | Count in B/C; `dec b` / `jp nz`. Body often a byte store through HL |
 | `do { … } while (0)` | statement macro | Not a loop — emit the body once |
+| `if (1)` / `if (0)` / constant `?:` | compile-time condition | Emit the taken arm only — no branch, no park for the untaken side |
 | `while (p < end)` pointers | byte/word walk vs sentinel | **Unsigned** `<` on the addresses: DSUB **C**. End in BC, p in HL/DE |
 | Nested run-length | inner `while` equal bytes, cap 255 | Outer in-cursor **HL**, out-cursor **DE**, run in **C**. Inner: `ld a,(hl)` / `cp v` / `inc hl` / `inc c` / stop on Z of `inc c` (wrap 255→0) or mismatch |
 | Binary search | `mid=(lo+hi)>>1`; `lo=mid+1` / `hi=mid-1` | **Mandatory homes (call-free):** `lo` **BC**, `hi` **DE** (or reverse), `mid` in HL once. Reload lo/hi from the stack **only after `call`**. Non-neg mid: `add hl,de` / `sra hl`. `lo<=hi` is signed K **or** Z (`hi` may be −1). Indexed load: `add hl,hl` + table base → DE / `ld hl,(de)` — park `hi` first if that load needs DE. Masked `tab[mid]&m`: AND per byte in A (`and` is 8-bit). Four `ld de,sp+*` per probe = failed residency |
@@ -558,6 +615,7 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | `(k+1)>>1` | non-neg k | `inc hl` / `sra hl` |
 | `byte <<= 1` then `\|= 1` | pack bits | `add a,a` / `or 1`. Park the acc in **C** across calls |
 | **Variable** `byte <<= n` | live count | `n` in B: `add a,a` / `dec b` / `jp nz`. `w%8` is `and 7` when w≥0. Count 0 is a no-op (do not shift by an uninitialised imm) |
+| Variable **promoted** byte shift | `(int)uc << k` (16-bit source) | Narrow to a **byte loop** only when the shift is the byte-width consumer. `<<` narrows freely (low output byte depends on the low input byte); `>>` narrows only with a proven sign- or zero-extension from a byte |
 | `t ^= t >> c` / `t << c` | 32-bit xorshift | One long in DEHL; `>>` is **logical** (`unsigned long`) via `rra` through A or `l_long_asr_u`. `t & 0x7fff` → HL low 15, D=0 |
 | LCG 32 | `(last*A+C)%M` | `static` state stays BSS; `l_long_mult` / `l_long_div_u` (or combined). Calls clobber parking |
 | `uint32_t d += uint16 * K` | widen then madd | Zero-extend word to DEHL (`ld de,0`); const× by shift-add or one `l_long_mult`; then **one** divmod if both quot and rem are used |
@@ -580,6 +638,8 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | Q8.8 mul | `(u16*u16)>>8` → u16 | 16×16→**32** then **byte slide** `>>8` (L←H←E←D, D=0). Not `l_mult` (16×16→16), not four `l_mult` partials — `l_mult_ulong` is in `8085.lst`. Not `sra hl` |
 | Sign-extend `char`→`int` | `int x = sc;` | `ld a,l` / `add a,a` / `sbc a,a` / `ld h,a` |
 | Zero-extend `unsigned char`→`int` | `int x = uc;` | `ld h,0`. Promotes to **signed** `int` (the sum can go negative) |
+| Widen into the pair the consumer wants | `(int)u8 + y` | `ld l,a` / `ld h,0` **immediately before** `add hl,de`. Do **not** widen into DE then copy to HL (`ld e,a; ld d,0; ld hl,de` is a pipeline defect). A zero-extended byte is widened where it will be used |
+| `(uint8_t)(w << n)` narrow | truncate of a left shift | **Compute only the bytes the result keeps.** A left shift's low output byte depends only on the low input byte (`ld a,l` / `add a,a`×n on the byte); a full-word shift into a truncation is waste. A **right** shift narrows only when the source is provably zero- or sign-extended from a byte — the shifted-out high bits feed the low byte |
 | Sign-extend `int`→`long` | `(long)i` / `(unsigned long)(long)i` | HL as-is; `ld a,h` / `add a,a` / `sbc a,a` / `ld d,a` / `ld e,a` |
 | Zero-extend via `(unsigned)` | `(unsigned long)(unsigned)i` | HL truncated; `ld de,0` — not sign-extend |
 | Narrowing store | `(signed char)(v>>k)` / `(unsigned char)` | **One** byte `ld (de),a` or `ld (hl),a`. Must not write the neighbour |
@@ -614,6 +674,7 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | Deep recursion | N-queens / qsort_rec | Automatics **stack-only** (col, row, lo, hi, i). File-scope `board[]` is BSS. Header **Slots** after every call (Comments). `if (d<0) d=-d`: DSUB then `jp k` / `cpl; cpl; inc hl` with HL=d only. After call 1’s arg-clean, re-read call 2’s args from the **restored** frame. Worked `_safe` / `_place`: **Sequences**. A stub `_place` that does not recurse is not this shape — do not claim ticks |
 | Frame-resident array | `int loc[16]; … loc[k]` | Allocate on SP (`ld hl,-n` / `add hl,sp` / `ld sp,hl`). Base `ld de,sp+*`. Dynamic k: `add hl,hl` / `add hl,de` / `ex de,hl` / `ld hl,(de)`. **No** `add hl,ix` |
 | Address-taken local | `f(&v)` / `f(&t[i])` | Real stack slot. Reload v and the array after the call. Cannot keep v in BC across `call` |
+| Private local struct, fixed offsets | `struct pt a; a.x=…; a.y=…` | A local struct whose address never escapes can be **field-split**: each scalar field in its own home (BC / DE / C / stack), no struct address emitted. Refuse if a field address is taken, the object is a parameter or `volatile`, a field is dynamically indexed, or a union is written via one member and read via another |
 | `T m[R][C]` parameter | decays to `T (*)[C]` | Row is pointer + `i * C * sizeof(T)`. Inner j walks a row cursor |
 | Task / `void (*)(void *)` | push param, call through HL | SMALLC: push `void *`, `jp (hl)`. A yield **clobbers** A F BC DE HL; reload from TCB/stack |
 | `*(const T *)p` | comparator load | Arg pointer in DE: `ld hl,(de)` |
