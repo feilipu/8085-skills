@@ -518,9 +518,9 @@ tree; they are **not** part of the product PR.
 | “Long div opt made fannkuch 5% worse” | Map: **no** `l_long_div_*`; A/B binaries **identical**; hotspots: app + `l_div` (16-bit) + `l_lt` |
 | “Fasta long-div win” | Map has `l_long_div_0`; A/B ticks 216M → 205M; hotspots concentrated in div_loop / batch |
 | 8080 batch div wrong after port | `ld hl,sp+*` is `add hl,sp` → **clobbers C**; save/restore Carry around SP math (8085 `ld de,sp+*` does not) |
-| Restoring `fsdiv` vs NR `fsinv`×mul | Swap only div `.asm`; rebuild z80+8085 (+z80n/z180 if measuring HW mul); suite 16/16; TIMER: **whetstone** shows ~1.4×; **n-body / spectral** often **0%** (mul/sqrt-hot) |
-| “`1.0f/x` same speed as `inv(x)`” | sccz80 rewrites literal `1.0f/x` → `inv`; map shows only `fsinv`. Force runtime numerator (`static float one=1`) or `a/b` to hit `fsdiv` |
-| z80n/z180 inv faster, div unchanged | HW mul is on NR inv / mul cores; restoring div does not use `mulu_32h_*` — z80n div TIMER ≡ plain z80 |
+| Restoring `fsdiv` vs old NR `fsinv`×mul | Historical. Public `m32_fsinv_fastcall` is the restoring bridge (`asm/f32_fsinv.asm` → `m32_fsdiv_callee`). NR bodies in `asm/<cpu>/hist/` are not assembled. The whetstone ~1.4× was the div swap. **n-body / spectral** often **0%** (mul/sqrt-hot). Policy: **`library-math32`** |
+| “`1.0f/x` same speed as `inv(x)`” | Both are restoring `m32_fsdiv`. sccz80 still rewrites literal `1.0f/x` → `inv`. Map: `m32_fsinv_fastcall` then `m32_fsdiv`, not `hist/f32_fsinv` |
+| z80n/z180 mul faster, div unchanged | HW mul helps mul and `invsqrt`, not restoring div or public inv. z80n div TIMER ≡ plain z80 |
 | math16 spectral “worse” after `--math16 --math32` link fix | Map: large `__code_fp_math32_size`; hotspots **~65% in `fsdiv`**, not `f16_div`. Discard row; use pure `--math16` + casted `1.0` |
 | TIMER math16 link: `ddiv` / `l_f48_ftof16` | Bare `1.0` under `__MATH_MATH16` → f48 path; cast to `DOUBLE` / half literal. Not fixed by adding `--math32` |
 | Classic ~11 vs newlib ~15 KWIPS Whetstone math32 | **Not** opt flags (`-O2` vs `-O3i` ≈ 0%). Hotspots: identical app C cycles; gap in math32 **wide path**. Root cause (#3061): sccz80 newlib called plain `sin`/`sqrt` (stack bridge) with DEHL. Fix: newlib `proto/math.h` `*_fastcall` remaps under `__MATH_MATH32`. After fix TIMER ≈ classic (~11 KWIPS / ~362M ticks). Map must show `sin_fastcall` / `sqrt_fastcall`; zero hits on `m32_fsinvsqrt` ⇒ still broken |
@@ -537,6 +537,8 @@ When the agent already emitted 8085 asm with **`compiler-ac85`**, compare qualit
 **8085-support skip probe (Workflow step 0 in `compiler-ac85`).** Before emit or a multi score, try `zcc +test -clib=8085` on the C. Skip — do not invent libc — if the link fails on `qsort`, `_heap`, `pow`, `malloc`, or float helpers. Always skip unless a proven 8085 classic TIMER/`+test` path exists: **n-body, spectral-norm, fasta, binary-trees, sorting, dhrystone, coremark, mandelbrot, whetstone, paranoia**. `coremark10` / `sprintf` / `sscanf` / `gamer_benchmark` have no in-tree +test 8085 recipe.
 
 **zcc-multi float:** `-compiler=multi` does not forward `--math32` / `--math-mbf32` to the per-variant compiles (`src/zcc/zcc.c` `multi_compiler_args`). Those benches build as f48/genmath and fail (`cpcmath.inc` / `dmul`). The multi “winner” for `mandelbrot`, `n-body`, `whetstone`, `spectral-norm`, `fasta`, `pi` is unstable. Exclude them from numeric comparison; this is a zcc-multi limitation, not an agent or 80cc issue.
+
+**zcc-multi size:** one string pool (the data-variant `dumplits` image — **`compiler-80cc`**). The map has one `i_1_<data-variant>` pool label. On `test/suites/*bench`, the multi `.bin` stays at or under the largest of sccz80, 80cc-sp, and 80cc-fp. The default metric is ticks, so multi can still be larger than the smaller of those three.
 
 1. Copy the bench **`z88dk-classic/readme.txt` `zcc` line**. 8085: never `-fframe-pointer`. Fannkuch 8085 adds `--opt-code-speed`; sieve does not. 80cc 8085 **qsort does not link** — skip that row.
 2. Remeasure **both** sides on the **same** toolchain revision. Readme ticks age.
@@ -557,7 +559,7 @@ When the agent already emitted 8085 asm with **`compiler-ac85`**, compare qualit
 1. Snapshot **NEW** sources; pull **OLD** from a known commit if needed.
 2. Force-rebuild products that list the object (`math32` + `math32_8085`; z80n/z180 if shared `asm/z80/f32_fsdiv.asm` or mul helpers).
 3. Install to `lib/clibs/`; **delete** `.bin`/`.map`; same `zcc +test` line both sides.
-4. Prove link: map has `m32_fsdiv` / `div_body` (restoring) vs trampoline + `m32_fsinv` (NR).
+4. Prove link: map has `m32_fsdiv` / `div_body`. Public inv is `m32_fsinv_fastcall` in `asm/f32_fsinv.asm`, then `m32_fsdiv`. `hist/f32_fsinv` is absent.
 5. Report non-goals (benches without `/` call sites) so “0%” is not a failed experiment.
 
 ---

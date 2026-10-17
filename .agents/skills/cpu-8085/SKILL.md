@@ -419,8 +419,8 @@ Partial **unroll** when the body is small. Entry style: public DE/HL form → **
 
 | Lesson | Detail |
 |--------|--------|
-| Prefer **restoring** `fsdiv` / `f16_div` over NR `fsinv`×mul for general `/` | z80 + 8085 cores; large TIMER win on divide-hot code (whetstone ~1.4×) |
-| `fsinv` stays NR | Use for reciprocal-as-primitive; HW mul (z80n `mul de` / z180 `mlt`) helps **inv**, not the restoring loop |
+| Prefer **restoring** `fsdiv` / `f16_div` for general `/` and for public `inv` | z80 + 8085 cores; large TIMER win on divide-hot code (whetstone ~1.4×) |
+| Public reciprocal is restoring `1/x` | `m32_fsinv_fastcall` / `asm_f16_inv` call the restoring divider. NR bodies live in `asm/<cpu>/hist/` and are not assembled. `invsqrt` stays NR. Policy: **`library-math32`** |
 | 8085 core | Stack-only second operand / temps; `sub hl,bc` + `rl de`; **no** EXX / IX / IY |
 | Loop counter | Do not reuse the count register as a working BC/DE mid-loop (classic hang: never reaches `TIMER_STOP`) |
 | Rem / count clobber | Keep remainder high and step count off the hot DEHL path (stack slots) |
@@ -563,6 +563,7 @@ Assembler must be **8085-aware** (these encodings are not Z80 prefixes).
 10. **Illegal chip `(de)` stores** — only `a` / `hl`. Saccharine `ld (de+),a` is fine. `ld (de),l` assembling is a **paid** `ex de,hl` expansion, not a chip op.
 11. **`__CPU_INTEL__` is set for 8085.** 9-common `IF __CPU_INTEL__` takes the 8080-portable path and will not emit `rl de` / `sra hl`. Do not “fix” those files with `#if __CPU_8085__`. Fork into `7-8085/` and list the module first (`l/util/8085.lst`, `l/sccz80/8085.lst`). Existing forks: `l_lsl_dehl`, `l_asr_dehl`, `l_long_asr`, `l_small_atoul` / `htoul` / `otoul` / `utoa`, `l_gint1sp`…`l_gint8sp`. **New 8085-only code** does not `call l_gint*sp` — open-code `ld de,sp+*` / `ld hl,(de)`. After every `push`/`pop`, recount N (`compiler-ac85` Offset invariant). `l_glong` last resort.
 12. **No `srl`, no `bit n,r`, no `ld bc,sp+*`, no `ld bc,(de)`.** `CB` is `rst v`. LDSI is **DE** only. Word through DE is HL. `inc`/`dec` on a pair are **±1 byte**, not ±element.
+13. **`ei` does not enable interrupts until the following instruction has completed.** `ei` / `ret` returns without an interrupt between them. An interrupt cannot land on the instruction after `ei`.
 
 ## Preference order (when writing 8085-only code)
 

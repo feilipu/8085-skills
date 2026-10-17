@@ -121,6 +121,8 @@ store, **reload** `x` from its slot; do not keep a value obtained earlier
 and do not fold a constant belief across the event
 (`unsigned a=0; bump(&a); return a+x;` must reload `a`). The escape is
 function-wide: an escape in an earlier statement aliases a later one.
+A local whose address is never taken **keeps** a constant across a
+`call`. Reload only an address-taken or `volatile` object.
 
 **A write through a pointer names no symbol.** `*p = v` (or a `call`
 whose callee can store) can change **anything** reachable, so no value
@@ -159,6 +161,10 @@ cleans**. Fastcall / callee only when the **prototype** says so. Do not
 invent a private register-only ABI.
 
 C `foo` → asm `_foo`. `char` arguments occupy **2** stack bytes.
+A `signed char` pushed as an `int` or a variadic argument is
+**sign-extended** into that word (`(signed char)-3` → `ld hl,-3` /
+`push hl`). Zero-extension prints 253. `unsigned char` zero-extends.
+A constant byte whose only uses are those pushes has no slot.
 Return address is 2 bytes (`params-offset` 2). No saved IX.
 
 ```
@@ -447,8 +453,8 @@ When a C op is not a few native/extended insns, **consider** the 8085 catalogs b
 |---------|-----|
 | `libsrc/l/sccz80/8085.lst` | 16/32-bit sccz80 runtime (`l_mult`, `l_div`, `l_div_u`, `l_mult_ulong`, `l_long_*`). Includes `8080.lst` for the rest |
 | `libsrc/l/util/8085.lst` | 32-bit shifts `l_lsl_dehl` / `l_asr_dehl`; small ASCII `l_small_utoa` / `l_small_atoul` / `l_small_htoul` / `l_small_otoul` |
-| `libsrc/math/float/math32/` (`asm/8085/`) | IEEE32 cores: `f32_fsadd`, `f32_fsmul`, `f32_fsdiv` (**restoring**), `f32_fsinv` (NR — not for `1.0/x`), `f32_fssqrt`, `f32_fscompare`, `f32_fsconv`, `f32_f2long`, … Higher: `m32_sinf` and peers. Policy: **`library-math32`** |
-| `libsrc/math/float/math16/` (`asm/8085/`) | Half: `asm_f16_add` / `mul` / `div` (restoring) / `inv` (NR) / `sqrt` / `compare` / … Higher: `sinf16` and peers. Policy: **`library-math16`** |
+| `libsrc/math/float/math32/` (`asm/8085/`) | IEEE32 cores: `f32_fsadd`, `f32_fsmul`, `f32_fsdiv` (**restoring**). Public `m32_fsinv_fastcall` is the same restoring bridge. NR reciprocal sources in `asm/<cpu>/hist/` are not linked. `invsqrt` stays NR. Policy: **`library-math32`** |
+| `libsrc/math/float/math16/` (`asm/8085/`) | Half: `asm_f16_add` / `mul` / `div` (restoring). Public `asm_f16_inv` is the restoring bridge; `hist/` NR is not linked. `invsqrt` stays NR. Policy: **`library-math16`** |
 
 **Open-code; do not call** on 8085: `l_eq`/`l_ne`/`l_lt`/`l_le`/`l_gt`/`l_ge`/`l_ult`/`l_ule`/`l_ugt`/`l_uge` (`sub hl,bc` + K/C/Z); `l_rlde` (native `rl de`); `l_gint*sp` (`ld de,sp+*` / `ld hl,(de)`); `l_pint_*` (`ld (de),hl`); `l_asr` / `l_asr_u` when the count is 1 or a small constant (`sra hl` / logical `>>`). Do not bind `l_setix` / `l_setiy` / f48.
 
@@ -473,8 +479,11 @@ for two `ld hl,(de)`. `EXTERN` from `libsrc/l/sccz80/8080.lst` (pulled in by
 | `if (p)` pointer / `== NULL` | `ld a,h` / `or l` |
 | `if (c)` byte | `ld a,c` (or `(hl)`) / `or a` |
 | signed `c < 0` / `c >= 0` (8-bit) | `ld a,c` / `rla` / `jp c` (or `or a` / `jp m`). Do **not** `cp 0` — C after `cp 0` is never set, so `jp c` never takes |
-| `a && b` / `a \|\| b` | Short-circuit; skip the second arm. Side-effecting operands **must not** run when skipped. Each arm writes Z. Cheap int test before a float/call |
+| `a && b` / `a \|\| b` | Short-circuit; skip the second arm. Side-effecting operands **must not** run when skipped. Each arm writes Z. Cheap int test before a float/call. **As a value** (`int x = a && b`): each leg jumps to a join that writes 0 or 1 (boolean-of-equality). A leftover Z is only the branch form |
 | `x + y` (16) | `add hl,de` or `add hl,bc` |
+| word already in BC or DE `+ K` | `ld hl,K` / `add hl,bc` (or `de`). Do not copy the pair to HL and then add a second pair. `word - K` while BC is live: `ld de,-K` / `add hl,de` |
+| `x == -1` (word) | `ld a,h` / `and l` / `inc a` / `jp z` |
+| `x++ == K` / `x++ != K` | Compare the value **after** the step with `K+1` (`x--` with `K-1`). Do not keep the old value in BC across the store. Only `==` and `!=` |
 | `x - y` / `==` / `!=` (16) | y in BC; `sub hl,bc`; **Z** for `==` / `!=`. **Memory operands:** subtrahend first into BC, minuend second into HL (`cpu-8085` §4). Two `ld hl,(mem)` as A then B computes `B − A` |
 | boolean-of-equality `==` → 0/1 | **branch to set 1 / set 0**. `sub hl,bc` / `jp z,eq1` / `ld hl,0` / `jp done` / `eq1: ld hl,1`. Do **not** `ld h,0; ld l,a` on a leftover A |
 | signed `<` / `>=` (16) | `sub hl,bc` then **immediately** `jp k` / `jp nk` |
@@ -518,7 +527,7 @@ for two `ld hl,(de)`. `EXTERN` from `libsrc/l/sccz80/8080.lst` (pulled in by
 | `*p++ = (BYTE)val; val >>= 8` | `ld (de),a` with A=L; `inc de`; then **logical** byte slide L←H←E←D, D=0 (unsigned). Not `sra hl` |
 | Range `c >= 'A' && c <= 'Z'` | `ld a,c` / `cp 'A'` / `jp c` / `cp 'Z'+1` / `jp nc` — 8-bit, unsigned |
 | `float /` | restoring divide (`library-math32`), not inv×mul |
-| `1.0 / x` | still restoring `/`, not `fsinv` |
+| `1.0 / x` | restoring `/` (`m32_fsdiv` or public `m32_fsinv_fastcall` — same bridge). Do not call `asm/<cpu>/hist/f32_fsinv.asm` |
 | Counted 16-bit loop | `cpu-8085` §5. Flat `ld bc,N-1` / `jp nk`, or nested `dec bc` / `inc b` / `inc c`. Both are valid. Do not mix them. **Not** C `n--` → `jp nk` |
 | Counted loop that **may run 0 times** | Test the counter **before** decrement (`ld a,h; or l; jp z,done` then body then `dec hl`). `dec; jp z` runs n−1 times and underflows when n=0 |
 | 8-bit counted loop | `dec b` / `jp nz` (opcode `10` is `sra hl`) |
@@ -528,7 +537,7 @@ for two `ld hl,(de)`. `EXTERN` from `libsrc/l/sccz80/8080.lst` (pulled in by
 | `?:` | compare then two tails; signed test uses K, unsigned uses C |
 | `if (d<0) d=-d` / `abs` 16-bit | `sub hl,bc` then `jp k` / `cpl` L and H / `inc hl`. **`neg` is Z80 (A only) — not 8085** |
 | `return` 16-bit | HL; never `pop af` for the return address |
-| `return` `char` | L; H dead |
+| `return` `char` | L; H dead. Constant `1…255`: `ld l,N`. Zero: `xor a` / `ld l,a` |
 | `return` `long` | DEHL |
 | `printf` / varargs | `ld a,N` then `call` |
 
@@ -539,7 +548,10 @@ the result is 0. After
 and **C encodes unsigned borrow** (`jp c` = unsigned HL < BC). Pick by
 the C type, not by habit. `lo<=hi` with a possibly negative `hi` is
 **signed** (K or Z). Use K/C **immediately**. Do not mix them. Do not
-copy Z80 `dec bc; jp nz`. Polarities: **Sequences**.
+copy Z80 `dec bc; jp nz`. A signed compare whose **both** sides stay in
+0…32767 for the whole live range may use **C**. A rising `int i = 0; i++`
+is not that proof (it can pass 32767). A down-count that starts
+non-negative and decrements only when non-zero may. Polarities: **Sequences**.
 
 **`(de)` stores:** chip ops are `ld (de),a` and `ld (de),hl` (loads
 `ld a,(de)` / `ld hl,(de)`). There is no `ld (de),l` / `ld (de),n` as a
@@ -564,6 +576,7 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | 2D `int a[R][C]` | `A[i][j]` | `i*C+j` then `add hl,hl`. `*50` = `*2 + *16 + *32` (`add hl,hl` then `add hl,hl`×4 + orig) |
 | `p + k` / `s[k]` | byte pointer + const | `ld de,hl+off` if off is u8, else `add hl,de` |
 | `&arr[i]` then fields | `b = &arr[i]; b->x` | Form `b` **once** in DE; `ld de,hl+off` per field. Do not redo `i*sizeof` for every member |
+| `p = &g; p->field` | base is one symbol, not stepped | Absolute `ld hl,(_g+off)`. A later `p++` blocks the fold |
 | `*out++ = byte` | packed output | **`ld (de+),a`** |
 | 1-based array | `E[1]…E[n]` | Keep the unused `[0]` hole; do not rewrite indexes to 0-based |
 | Power-of-two window | `buf[off % 512]` / `off / 512` | `% 512` is `ld a,h; and 0x01; ld h,a` (never `and 0x01FF`). `/ 512` is `>> 9`. Keep the window base in DE |
@@ -607,6 +620,9 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | Range ladder | `if (c<32)… else if (c<48)…` | Keep the byte in **A**. Successive `cp` / `jp nc` — do not reload. Lexer class: ws / alpha / digit / other as 8-bit unsigned ranges (`'_'` is a `cp`) |
 | Clamp / saturate | `if (v>hi) v=hi; if (v<lo) v=lo` | Signed: `sub hl,bc` then K; assign the bound. Same variable on both arms — one home |
 | Side-effect `&&` / `\|\|` | `a < b && probe(c) > d` | Jump over `probe` when `a<b` is false. Flattening to arithmetic is a miscompile |
+| `&&` / `\|\|` as a value | `int x = a && b` | Each leg jumps to a 0/1 join (boolean-of-equality). Do not leave Z as the result |
+| `x++ == K` | post-inc equality | Compare the stepped value with `K+1` (`x--` with `K-1`). Only `==` / `!=` |
+| `x == -1` | word all-ones | `ld a,h` / `and l` / `inc a` |
 
 ### Widths, bits, 32-bit
 
@@ -621,8 +637,9 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | `uint32_t d += uint16 * K` | widen then madd | Zero-extend word to DEHL (`ld de,0`); const× by shift-add or one `l_long_mult`; then **one** divmod if both quot and rem are used |
 | `i*2-1` | odd from index | `add hl,hl` / `dec hl` |
 | `(uint16_t)long` / `(uint32_t)word` | narrow / widen | Truncate = HL; zero-extend = `ld de,0` |
-| 32-bit add/sub | two words | Low: `add hl,bc` (sets C). High: `adc` **through A** on D/E. No `adc hl,de` chip op. Multi-word borrow: `sbc a` through A, not `sub hl,bc` on the high half |
-| `12L * N` | long product | Width is **long**. 16-bit `l_mult` is a miscompile if the product can exceed 65535 |
+| 32-bit add/sub | two words | Low: `add hl,bc` (sets C). High: `adc` **through A** on D/E. No `adc hl,de` chip op. Multi-word borrow: `sbc a` through A, not `sub hl,bc` on the high half. A long ± a value that fits in 16 bits: `add hl,bc` then `jp nc` / `inc de` (borrow: `jp c` / `dec de`). A full `adc` of a zero high word is the longer form |
+| `g += h` long globals, stored back | result only feeds the store | Two pointers, four bytes through A. Two LHLX/SHLX plus `add hl,bc` is larger and slower (no `adc hl`: 29 B / ~142 T vs 25 B / ~120 T). Keep word loads when the sum must stay in DEHL |
+| `12L * N` | long product | Width is **long**. 16-bit `l_mult` is a miscompile if the product can exceed 65535. Hot `*2` / `*10` / `*25` stay shift-add. A one-shot long times an awkward constant (not `2^a` or `2^a±1`) is the 9-byte `l_long_mult` — expanding `*6` / `*10` / `*24` on a long is larger than that call |
 | Packed 12-bit LE | `i += i/2`; odd nibble | `i/2` is `sra hl`. `i & 1` is `ld a,l` / `and 1`. Pack: `<< 4` is `add a,a`×4; 12-bit mask is `ld a,h` / `and 0x0F`. Two window bytes may sit on a **sector/page boundary** — do not assume one `ld hl,(de)` spans them |
 | WORD array in a window | `*(WORD *)(win + i*2 % W)` | `i*2` is `add hl,hl`; then `% W` if W is `1<<n`; `ld hl,(de)` |
 | DWORD array + mask | `*(DWORD *)p & 0x0FFFFFFF` | LE DWORD load; `ld a,d` / `and 0x0F` / `ld d,a` |
@@ -639,7 +656,7 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | Sign-extend `char`→`int` | `int x = sc;` | `ld a,l` / `add a,a` / `sbc a,a` / `ld h,a` |
 | Zero-extend `unsigned char`→`int` | `int x = uc;` | `ld h,0`. Promotes to **signed** `int` (the sum can go negative) |
 | Widen into the pair the consumer wants | `(int)u8 + y` | `ld l,a` / `ld h,0` **immediately before** `add hl,de`. Do **not** widen into DE then copy to HL (`ld e,a; ld d,0; ld hl,de` is a pipeline defect). A zero-extended byte is widened where it will be used |
-| `(uint8_t)(w << n)` narrow | truncate of a left shift | **Compute only the bytes the result keeps.** A left shift's low output byte depends only on the low input byte (`ld a,l` / `add a,a`×n on the byte); a full-word shift into a truncation is waste. A **right** shift narrows only when the source is provably zero- or sign-extended from a byte — the shifted-out high bits feed the low byte |
+| `(uint8_t)(w << n)` narrow | truncate of a left shift | **Compute only the bytes the result keeps.** A left shift's low output byte depends only on the low input byte (`ld a,l` / `add a,a`×n on the byte); a full-word shift into a truncation is waste. A **right** shift narrows only when the source is provably zero- or sign-extended from a byte — the shifted-out high bits feed the low byte. A byte op on a widened byte reads the **original** byte. `x & 0xff` / `x \| 0` / `x ^ 0` on a byte is a copy |
 | Sign-extend `int`→`long` | `(long)i` / `(unsigned long)(long)i` | HL as-is; `ld a,h` / `add a,a` / `sbc a,a` / `ld d,a` / `ld e,a` |
 | Zero-extend via `(unsigned)` | `(unsigned long)(unsigned)i` | HL truncated; `ld de,0` — not sign-extend |
 | Narrowing store | `(signed char)(v>>k)` / `(unsigned char)` | **One** byte `ld (de),a` or `ld (hl),a`. Must not write the neighbour |
@@ -683,7 +700,7 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | `enum` / small `Boolean` | `int` on the stack | 2 bytes stacked; values often fit in A for `cp` |
 | `register` | storage-class hint | BC/DE only. Ignore if it parks a live value in HL/A |
 | Path / class tests | `IsUpper` / `IsDigit` / `c=='/'` | 8-bit `cp` ranges in A |
-| Critical section / context save | `di` around a sequence; save regs to a TCB | 8085: `di`/`ei`. Save IFF with **`rim`/`sim`**, not `ld a,i`. Save **AF BC DE HL** and SP via `ld (de),hl` into the TCB. **No** `exx`, IX, IY, `reti`. If existing port asm uses those, keep the C shapes and replace the asm |
+| Critical section / context save | `di` around a sequence; save regs to a TCB | 8085: `di`/`ei`. **`ei` enables after the next instruction**, so `ei` / `ret` returns without an interrupt. Save IFF with **`rim`/`sim`**, not `ld a,i`. Save **AF BC DE HL** and SP via `ld (de),hl` into the TCB. **No** `exx`, IX, IY, `reti`. If existing port asm uses those, keep the C shapes and replace the asm |
 
 ### Float kernels
 
@@ -692,11 +709,12 @@ File-scope / `static` floats stay in BSS/data. Never park an automatic
 float in BSS to “free” DEHL.
 `sin` / `cos` / `atan` / `log` / `exp` / `sqrt` / `pow` / `fsdiv` clobber
 **A F BC DE HL**. Reload cursors after the call. Bind `*_fastcall` when
-the prototype says so.
+the prototype says so. An IEEE32 whose only reader is that helper is
+`push de` / `push hl`. Do not `ld bc,hl` in front of the push.
 
 | Shape | C | 8085 |
 |-------|---|------|
-| Integer then convert | `1.0/(n*(n+1)/2+…)` | Integer triangular first (`n*(n+1)` is even → `sra hl`); convert; restoring `/`. Do not emit `fsinv` for `/` |
+| Integer then convert | `1.0/(n*(n+1)/2+…)` | Integer triangular first (`n*(n+1)` is even → `sra hl`); convert; restoring `/` (`m32_fsdiv` or the public inv bridge). Do not call `hist/f32_fsinv.asm` |
 | `1.0/sqrt(r)` | unless the source writes `invsqrt` | `sqrt` then restoring `/` |
 | Horner / iterate | several live floats | Hoist invariants. Spill the second complex pair; do not pretend `exx` exists |
 | `pow(2, integer)` assigned to integer | `1 << n` | `ld hl,1` / `add hl,hl` `n` times (or 32-bit if width is long). Do not call `pow` for that |
@@ -1163,6 +1181,8 @@ flag side effects: **`cpu-8085`**.
 | `sra hl` for signed `/ (1<<n)` of a negative | C toward zero needs the bias `(1<<n)-1` first |
 | `(iy+d)` / `add iy,de` for `p->field` | No IY. Park p in DE / stack |
 | Evaluating both arms of `&&` / `\|\|` | Side effects and checksum probes diverge |
+| `ld de,(nn)` | Not an 8085 instruction. A global word is `ld hl,(nn)`, which destroys HL |
+| Copy `x` into DE across `x << n` so a later `+ x` reuses it | The slot reload is `ld de,sp+*` / `ld hl,(de)`. The copy burns a home |
 
 ## Workflow
 
@@ -1224,7 +1244,7 @@ Comparing this output to another compiler, and feeding lessons back into
 
 - ISA, flags, timings, stack sequences: `cpu-8085`
 - Assemble: `tool-z80asm`
-- Float algorithms: `library-math32`, `library-math16` (div = restoring, inv = NR)
+- Float algorithms: `library-math32`, `library-math16` (div and public inv = restoring; NR inv bodies unlinked; `invsqrt` stays NR)
 - Integer helpers: `libsrc/l/sccz80/8085.lst`, `libsrc/l/util/8085.lst`
 - Classic vs newlib: `library-classic`
 - Optional quality loop vs other compilers: `methodology-measure`
