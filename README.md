@@ -25,8 +25,8 @@ Full 8085 opcode tables: `.agents/skills/cpu-8085/references/opcodes.md`
 | **cpu-8085** | 8085 asm, opcode map, flags (S Z K A P V C), stack-only locals, extended ops |
 | **library-classic** | Classic clib, hybrid 8085 consoles, isolation from newlib |
 | **library-newlib** | CRT m4, FILE*, `asm_target_open`, dual-stack FCB vs FatFs |
-| **library-math32** | IEEE float cores, 8085 vs z80 products, restoring div / NR inv |
-| **library-math16** | Half float (restoring div / NR inv; 8085 stack-only cores) |
+| **library-math32** | IEEE float cores, 8085 vs z80 products, restoring div and public inv |
+| **library-math16** | Half float (restoring div and public inv; 8085 stack-only cores) |
 | **library-am9511** | Am9511A APU float (`--math-am9511` + `-clib=8085`; no `--math-am9511_8085`) |
 | **compiler-sccz80** | sccz80 codegen and `libsrc/l/sccz80/7-8085` runtime |
 | **compiler-zsdcc** | zsdcc / sdcc_ix / sdcc_iy (Z80-class; not the 8085 classic product) |

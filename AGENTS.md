@@ -48,7 +48,7 @@ Tree paths in the skills (`libsrc/`, `src/z80asm/dev/cpu/`, `support/benchmarks/
 4. **Mnemonics:** **Zilog everywhere** in z88dk sources. z80asm may accept **Intel** forms on 8080/8085 for **external-code compatibility only** — do not write Intel mnemonics in z88dk sources (`cpu-8085`, `tool-z80asm`).
 5. **8085:** extended ops and **stack-only** locals (`cpu-8085`).
 6. **Measure** with `z88dk-ticks`; put **CPU flag before the binary** (`tool-ticks`, `methodology-measure`).
-7. **math32 / math16**: `div` = restoring; `inv` = Newton–Raphson (`library-math32`, `library-math16`).
+7. **math32 / math16**: `div` and public `inv` are restoring `1/x`. NR reciprocal bodies are unlinked. `invsqrt` stays Newton–Raphson (`library-math32`, `library-math16`).
 8. **CPU opcode capability (last resort):** fixtures in z88dk `src/z80asm/dev/cpu/` (`cpu_test_8085_ok.asm` / `_err.asm`) answer “does **z80asm** accept this **source line** for `-m8085`, and what does it emit?” **ok** may be native, multi-byte synthetic, or `call __z80asm__*`. **`_strict_`** = strict mode (**synthetics forbidden**). Fixtures may list Intel spellings for compat tests; emit **Zilog** in tree work. How to read lines: skill **`tool-z80asm`**. `rg` one mnemonic; never bulk-load huge `*_err.asm` files.
 
 ## Commit hygiene (this repo)

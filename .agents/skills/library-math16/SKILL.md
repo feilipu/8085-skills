@@ -34,6 +34,7 @@ Policy mirrors math32:
 |----|-----------|
 | **div** / `asm_f16_div` | **Restoring** |
 | **inv** / `asm_f16_inv` | **Restoring** `1/x` via `asm/asm_f16_inv.asm`. The NR source is unchanged in `asm/<cpu>/hist/asm_f16_inv.asm` and is not assembled |
+| **SDCC div** / `cm16_sdcc_div` | **Restoring** `asm_f24_div_f24` (main = dividend, alt = divisor) |
 
 In **C higher functions** (`c/*.c`):
 
