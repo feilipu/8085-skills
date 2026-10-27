@@ -368,8 +368,10 @@ it.
 
 **After every `call` + caller-clean, re-derive every `ld de,sp+N` from
 the restored SP.** Call 2 of a recursive pair does not reuse call 1’s
-offsets. Callee-cleaned helpers (`memset_callee`, `memcpy_callee`) pop
-their own args: push exactly the declared word count; do not also pop.
+offsets. Callee-cleaned helpers (`memset_callee`, `memcpy_callee`,
+`l_f32_add` / `sub` / `mul` / `div`) pop the return address and then
+the stacked operand. Enter them with `call`. A tail `jp` returns into
+that operand. Push exactly the declared word count; do not also pop.
 
 ## Comments
 
@@ -530,7 +532,7 @@ for two `ld hl,(de)`. `EXTERN` from `libsrc/l/sccz80/8080.lst` (pulled in by
 | LE `*(DWORD *)p` | Pointer in DE: `ld hl,(de)` (low) / park / `inc de`×2 / `ld hl,(de)` (high) / `ex de,hl` / restore low. Pointer in HL: `ex de,hl` then the same. Stack slot: two `ld de,sp+N` at the **current** depth (Offset invariant). `l_glong` last resort (Helpers). Not a byte-shift chain |
 | `*p++ = (BYTE)val; val >>= 8` | `ld (de),a` with A=L; `inc de`; then **logical** byte slide L←H←E←D, D=0 (unsigned). Not `sra hl` |
 | Range `c >= 'A' && c <= 'Z'` | `ld a,c` / `cp 'A'` / `jp c` / `cp 'Z'+1` / `jp nc` — 8-bit, unsigned |
-| `float /` | restoring divide (`library-math32`), not inv×mul |
+| `float /` | A literal constant divisor is `* (float32)(1/literal)`; the left operand of `/` stays the left factor. A runtime divisor stays restoring `l_f32_div` (`library-math32`), not inv×mul and not `hist/` inv. The reciprocal multiply rounds differently from restoring `/`, and it is not a reassociation |
 | `1.0 / x` | restoring `/` (`m32_fsdiv` or public `m32_fsinv_fastcall` — same bridge). Do not call `asm/<cpu>/hist/f32_fsinv.asm` |
 | Counted 16-bit loop | `cpu-8085` §5. Flat `ld bc,N-1` / `jp nk`, or nested `dec bc` / `inc b` / `inc c`. Both are valid. Do not mix them. **Not** C `n--` → `jp nk` |
 | Counted loop that **may run 0 times** | Test the counter **before** decrement (`ld a,h; or l; jp z,done` then body then `dec hl`). `dec; jp z` runs n−1 times and underflows when n=0 |
@@ -575,6 +577,7 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | `!byte` as 0/1 | `n -= !a[k]` | `ld a,(hl)` / `or a` / skip `dec` if non-zero. Do not sign-extend `unsigned char` |
 | Square induction | `i_sq += i+i+1` | Keep `i_sq` live; `add hl,bc` twice + `inc hl`. Do not recompute `i*i` |
 | Walking **word** array | `dst[i] = src[i]` linear | Cursor **DE**, `ld hl,(de)` / `ld (de),hl` / `inc de` twice. Index `i` is not a home if the walk is linear |
+| Overlapping word shift-down | `while (i<r) a[i]=a[i+1]` | Two cursors. Source starts one word above dest. Copy **forward** so each read happens before a later trip overwrites that word. Count in BC, tested before the body. A saved head is stored at `&a[r]` from `r`, not from the walk cursor. One cursor that writes two bytes below its read must finish the trip **+2** from where it started. Pair `inc`/`dec` are ±1 byte; a net +1 still matches the first two trips while every high byte is 0 |
 | `a[i]` random word | `a[k-i]` | `k-i` in HL; `add hl,hl`; `ld de,a` / `add hl,de` / `ex de,hl` / `ld hl,(de)` |
 | Word swap | `t=a[i]; a[i]=a[j]; a[j]=t` | Two addresses: one in DE, the other parked (BC as a **word** addr is wrong; park the second on the stack or rebuild). `ld hl,(de)` / `ex (sp),hl` / `ld (de),hl` |
 | 2D `int a[R][C]` | `A[i][j]` | `i*C+j` then `add hl,hl`. `*50` = `*2 + *16 + *32` (`add hl,hl` then `add hl,hl`×4 + orig) |
@@ -634,7 +637,7 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 |-------|---|------|
 | `(k+1)>>1` | non-neg k | `inc hl` / `sra hl` |
 | `byte <<= 1` then `\|= 1` | pack bits | `add a,a` / `or 1`. Park the acc in **C** across calls |
-| **Variable** `byte <<= n` | live count | `n` in B: `add a,a` / `dec b` / `jp nz`. `w%8` is `and 7` when w≥0. Count 0 is a no-op (do not shift by an uninitialised imm) |
+| **Variable** `byte <<= n` | live count | `n` in B: `add a,a` / `dec b` / `jp nz`. `w%8` is `and 7` when w≥0. Load the byte into A only after `n` is in B (the count expression uses A). Count 0 is a no-op (do not shift by an uninitialised imm) |
 | Variable **promoted** byte shift | `(int)uc << k` (16-bit source) | Narrow to a **byte loop** only when the shift is the byte-width consumer. `<<` narrows freely (low output byte depends on the low input byte); `>>` narrows only with a proven sign- or zero-extension from a byte |
 | `t ^= t >> c` / `t << c` | 32-bit xorshift | One long in DEHL; `>>` is **logical** (`unsigned long`) via `rra` through A or `l_long_asr_u`. `t & 0x7fff` → HL low 15, D=0 |
 | LCG 32 | `(last*A+C)%M` | `static` state stays BSS; `l_long_mult` / `l_long_div_u` (or combined). Calls clobber parking |
@@ -684,7 +687,7 @@ C (`static` / file-scope vs automatic) — a hot loop does not justify BSS.
 | Array of lists | `lists[prio]` | Small unsigned index: `add hl,hl` (pointer scale) + base. Empty walk is 8-bit `dec c` / `jp nz` if the count is 8-bit |
 | Circular byte/item queue | `w += size`; wrap at `tail` | Byte cursor HL or DE; add item size. Unsigned `>= tail` via **C**. Copy payload with `_memcpy` or a counted `ld a,(de)` / `ld (hl),a` / `inc` loop |
 | Address-ordered free list | split/coalesce blocks | Word pointers. Compare addresses **unsigned** (C). `size_t` is 16-bit |
-| `malloc` / `free` / `memcpy` / `strlen` / `strcpy` / `strcmp` / `qsort` | hosted libc **call** | Bind the preprocessed `PUBLIC`. If the source **writes** the loop (`while (*p)`), emit the byte-walk — do not replace it with a library call |
+| `malloc` / `free` / `memcpy` / `strlen` / `strcpy` / `strcmp` / `qsort` | hosted libc **call** | Bind the preprocessed `PUBLIC`. If the source **writes** the loop (`while (*p)`), emit the byte-walk — do not replace it with a library call. `strlen` of a string literal is its length; do not call |
 | Function pointer | `(*fp)(args)` / `qsort(..., cmp)` | SMALLC push args left-to-right, then a **fake return address**, then `jp (hl)`. Callee `ret` pops only that address; SP is then at the last-pushed arg — `pop bc` once per arg word. Recompute frame offsets after the trampoline. Worked listing: **Sequences**. No IX vtable |
 | Pointer table dispatch | `ops[k & 7](a, b)` | `k&7`; `add hl,hl` (pointer scale); base + DE; `ld hl,(de)`; push args; `jp (hl)` / trampoline. Same stride as `int ops[]`. Fetch `ld de,table` **clobbers DE** — park a register-homed index first |
 | Opaque callback loop | `acc = f(acc, i)` | **Every** home dies across `call`. Acc, i, n, f on the stack; reload each iter |
@@ -715,10 +718,29 @@ float in BSS to “free” DEHL.
 **A F BC DE HL**. Reload cursors after the call. Bind `*_fastcall` when
 the prototype says so. An IEEE32 whose only reader is that helper is
 `push de` / `push hl`. Do not `ld bc,hl` in front of the push.
+Enter `l_f32_add` / `sub` / `mul` / `div` with `call` (Frames).
+
+**The outer operator keeps its C operands.** `k * (a + b)` and
+`k - (a + b)` push **k**, then evaluate the parenthesized right into
+DEHL. Pushing the parenthesis and loading `k` into DEHL emits the
+swapped operator. One commutative mul may still exchange its factors
+so a power of two is the scanned operand (next paragraph). Do not
+exchange `-` or `/`.
+
+**8085 math32 mul scans the DEHL factor.** `m32_fsmul` unpacks the
+incoming DEHL (C right) first and parks it as `y`. The stacked left
+is unpacked second and becomes `x` in LDE, the multiplicand.
+`m32_mulu_32h_24x24` skips a 24×8 pass when a mantissa byte of `y`
+is zero, and leading-zero-scans the bytes it does not skip. A power
+of two (`1`, `2`, `0.5`, and the same values negative) has zero
+mantissa bytes: leave it in DEHL, even when C wrote it on the left.
+Exchanging those two operands does not change a finite product.
+Do not reassociate a chain (Optimise). Two runtime factors, neither
+known to have a zero byte: push the C left operand.
 
 | Shape | C | 8085 |
 |-------|---|------|
-| Integer then convert | `1.0/(n*(n+1)/2+…)` | Integer triangular first (`n*(n+1)` is even → `sra hl`); convert; restoring `/` (`m32_fsdiv` or the public inv bridge). Do not call `hist/f32_fsinv.asm` |
+| Integer then convert | `1.0/(n*(n+1)/2+…)` | Integer triangular first. `n*(n+1)` is even. If that product fits in signed 16, `sra hl`. If it sets bit 15 and still fits in unsigned 16 (consecutive positives, `n` = 181…255), a signed `/2` (`sra hl`, or the toward-zero bias then `sra`) returns a negative quotient — use unsigned `>> 1` (Primitives). Or keep a running `t += step; ++step` from a seed whose product fits in signed 16 (square induction) and never form the bit-15 product. Then convert; restoring `/` (`m32_fsdiv` or the public inv bridge). Do not call `hist/f32_fsinv.asm` |
 | `1.0/sqrt(r)` | unless the source writes `invsqrt` | `sqrt` then restoring `/` |
 | Horner / iterate | several live floats | Hoist invariants. Spill the second complex pair; do not pretend `exx` exists |
 | `pow(2, integer)` assigned to integer | `1 << n` | `ld hl,1` / `add hl,hl` `n` times (or 32-bit if width is long). Do not call `pow` for that |
@@ -1148,7 +1170,9 @@ flag side effects: **`cpu-8085`**.
     IEEE32 `+ - * /` are not associative; printed digits flip if the
     expression tree is reassociated. Reorder only integer and
     exact-constant transforms. Keep named float kernels as real
-    functions when the reference compiler does.
+    functions when the reference compiler does. Exchanging the two
+    operands of one commutative mul, so the scanned factor is in DEHL,
+    is not a reassociation (Float kernels).
 
 ### Do not emit
 
