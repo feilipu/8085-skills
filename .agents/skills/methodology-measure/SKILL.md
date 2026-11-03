@@ -540,7 +540,7 @@ When the agent already emitted 8085 asm with **`compiler-ac85`**, compare qualit
 
 **zcc-multi size:** one string pool (the data-variant `dumplits` image — **`compiler-80cc`**). The map has one `i_1_<data-variant>` pool label. On `test/suites/*bench`, the multi `.bin` stays at or under the largest of sccz80, 80cc-sp, and 80cc-fp. The default metric is ticks, so multi can still be larger than the smaller of those three.
 
-1. Copy the bench **`z88dk-classic/readme.txt` `zcc` line**. 8085: never `-fframe-pointer`. Fannkuch 8085 adds `--opt-code-speed`; sieve does not. 80cc 8085 **qsort does not link** — skip that row.
+1. Copy the bench **`z88dk-classic/readme.txt` `zcc` line**. 8085: never `-fframe-pointer`. Fannkuch 8085 sccz80 adds `--opt-code-speed`; sieve does not. 80cc ignores that flag. 80cc 8085 **qsort does not link** — skip that row.
 2. Remeasure **both** sides on the **same** toolchain revision. Readme ticks age.
 3. Mix C and asm **per bench** (`zcc` will not drop a C `PUBLIC` because an `.asm` also defines it):
 
